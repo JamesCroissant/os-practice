@@ -72,3 +72,24 @@ test line printed immediately.
 immediately by `Hello World!` and `1 + 2 = 3, 0x1234abcd` — confirming
 boot, the stack, `.bss` zeroing, `sbi_call`, `putchar`, and `printf`'s
 `%d`/`%x` paths all work together.
+
+## Step 3: trap handler
+
+A CPU trap (syscall, hardware interrupt, or — the case exercised here —
+an invalid instruction) transfers control to whatever address is in the
+`stvec` CSR. `kernel_entry` reads `scause` (why) and `sepc` (where)
+directly into `a0`/`a1` and calls `handle_trap(scause, sepc)`, which
+prints both and halts. No register-saving beyond that: this handler never
+resumes the code that trapped, so there's nothing to restore later. RISC-V
+requires `stvec` to be 4-byte aligned, hence
+`__attribute__((aligned(4)))` on `kernel_entry`.
+
+Tested by deliberately executing `unimp` — a reserved, all-zero
+instruction encoding that RISC-V guarantees is always illegal — right
+after the Step 2 printf calls.
+
+**Verified**: output shows `scause=00000002` (RISC-V's standard "illegal
+instruction" exception code) and `sepc=8020023e`. Cross-checked against
+`objdump -d`: `8020023e` is exactly the `unimp` instruction's address,
+confirming the trap fired for the right reason at the right place, not
+just that *some* trap happened to occur.
