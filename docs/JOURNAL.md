@@ -93,3 +93,37 @@ instruction" exception code) and `sepc=8020023e`. Cross-checked against
 `objdump -d`: `8020023e` is exactly the `unimp` instruction's address,
 confirming the trap fired for the right reason at the right place, not
 just that *some* trap happened to occur.
+
+## Step 4: context switching
+
+Multiple threads sharing one CPU comes down to one mechanism: save the
+CPU state of the thread giving up the CPU, restore the state of the one
+taking over. "CPU state" here means just the callee-saved registers
+(`ra`, `s0`-`s11` — the ones a function is contractually required to
+preserve across a call); caller-saved registers need no help since the
+caller already protects its own, and code/globals are shared between
+threads regardless.
+
+`switch_context(prev_sp, next_sp)` pushes those 13 words onto the
+*current* stack, stashes the resulting `sp` into `*prev_sp`, then does
+the exact reverse using `*next_sp`: load the incoming thread's saved
+`sp`, pop the 13 words back into the same registers, `ret`. That `ret`
+is the whole trick — it jumps to whatever `ra` was just popped, which for
+a thread's first-ever switch is wherever `thread_init` put its entry
+point.
+
+`thread_init` has to build that 13-word frame by hand for a thread that
+has never run, since `switch_context`'s restore side unconditionally pops
+13 words no matter what's actually there — only slot 0 (`ra`) is
+meaningful the first time; `s0`-`s11` start zeroed since nothing's read
+them yet.
+
+Two cooperative threads (`thread_a`/`thread_b`) each print one character
+and immediately yield to the other, forever.
+
+**Verified**: captured 2 seconds of serial output — the section following
+`Hello World!`/the `%d`/`%x` line is 437,192 characters of exactly
+`ABABAB...` (checked programmatically, not just eyeballed), followed only
+by the harness's own timeout-kill message. Confirms both directions of
+the switch work repeatedly (not just once) and that no register/stack
+corruption creeps in over ~200k round trips.
