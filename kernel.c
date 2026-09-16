@@ -148,6 +148,99 @@ void kernel_entry(void) {
     );
 }
 
+// A context switch saves the CPU state of the thread giving up the CPU
+// and restores the state of the one taking over -- that's the entire
+// mechanism multiple threads sharing one CPU are built on. "CPU state"
+// here means the callee-saved registers (ra, s0-s11: the ones a function
+// is required to preserve across a call) -- caller-saved registers and
+// globals need no help, since the caller already protects its own and
+// code/globals are shared between threads anyway.
+#define THREAD_STACK_SIZE 8192
+
+struct thread {
+    uint32_t sp;
+    uint8_t stack[THREAD_STACK_SIZE];
+};
+
+// Pushes the 13 callee-saved words onto the current stack, records where
+// they ended up (*prev_sp), then does the reverse for the incoming
+// thread: loads its saved sp, pops its 13 words back into the same
+// registers, and returns -- landing at whatever address the incoming
+// thread's saved `ra` holds.
+// prev_sp/next_sp are read directly via a0/a1 in the asm below, not as C
+// parameters -- naked functions shouldn't contain ordinary C statements
+// (no guaranteed stack frame), so __attribute__((unused)) silences the
+// warning instead of a (void) cast in the body.
+__attribute__((naked)) void switch_context(uint32_t *prev_sp __attribute__((unused)),
+                                            uint32_t *next_sp __attribute__((unused))) {
+    __asm__ __volatile__(
+        "addi sp, sp, -13 * 4\n"
+        "sw ra,   0 * 4(sp)\n"
+        "sw s0,   1 * 4(sp)\n"
+        "sw s1,   2 * 4(sp)\n"
+        "sw s2,   3 * 4(sp)\n"
+        "sw s3,   4 * 4(sp)\n"
+        "sw s4,   5 * 4(sp)\n"
+        "sw s5,   6 * 4(sp)\n"
+        "sw s6,   7 * 4(sp)\n"
+        "sw s7,   8 * 4(sp)\n"
+        "sw s8,   9 * 4(sp)\n"
+        "sw s9,  10 * 4(sp)\n"
+        "sw s10, 11 * 4(sp)\n"
+        "sw s11, 12 * 4(sp)\n"
+
+        "sw sp, (a0)\n"
+        "lw sp, (a1)\n"
+
+        "lw ra,   0 * 4(sp)\n"
+        "lw s0,   1 * 4(sp)\n"
+        "lw s1,   2 * 4(sp)\n"
+        "lw s2,   3 * 4(sp)\n"
+        "lw s3,   4 * 4(sp)\n"
+        "lw s4,   5 * 4(sp)\n"
+        "lw s5,   6 * 4(sp)\n"
+        "lw s6,   7 * 4(sp)\n"
+        "lw s7,   8 * 4(sp)\n"
+        "lw s8,   9 * 4(sp)\n"
+        "lw s9,  10 * 4(sp)\n"
+        "lw s10, 11 * 4(sp)\n"
+        "lw s11, 12 * 4(sp)\n"
+        "addi sp, sp, 13 * 4\n"
+        "ret\n"
+    );
+}
+
+// Prepares a thread that has never run yet: switch_context's restore
+// side always pops 13 words expecting ra, s0..s11 in that order, so a
+// brand new thread needs that exact frame pre-built on its own stack --
+// only `ra` (the entry point) matters, since s0-s11 haven't been read by
+// anyone yet.
+void thread_init(struct thread *th, void (*entry)(void)) {
+    uint32_t *sp = (uint32_t *)(th->stack + sizeof(th->stack));
+    sp -= 13;
+    memset(sp, 0, 13 * sizeof(uint32_t));
+    sp[0] = (uint32_t)entry;  // ra
+    th->sp = (uint32_t)sp;
+}
+
+struct thread thread_a, thread_b;
+
+void thread_b_entry(void);
+
+void thread_a_entry(void) {
+    for (;;) {
+        printf("A");
+        switch_context(&thread_a.sp, &thread_b.sp);
+    }
+}
+
+void thread_b_entry(void) {
+    for (;;) {
+        printf("B");
+        switch_context(&thread_b.sp, &thread_a.sp);
+    }
+}
+
 void kernel_main(void) {
     // The linker only reserves space for .bss; nothing has zeroed it yet.
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
@@ -157,10 +250,14 @@ void kernel_main(void) {
     printf("\n\nHello World!\n");
     printf("1 + 2 = %d, 0x%x\n", 1 + 2, 0x1234abcd);
 
-    // Deliberately trigger a trap to prove the handler above actually
-    // runs: `unimp` is a reserved all-zero instruction encoding RISC-V
-    // guarantees will always be illegal.
-    __asm__ __volatile__("unimp");
+    thread_init(&thread_a, thread_a_entry);
+    thread_init(&thread_b, thread_b_entry);
+
+    // kernel_main's own "thread" is never switched back into -- thread_a
+    // and thread_b only ever hand the CPU to each other -- so its saved
+    // sp has nowhere to go but this one-off local.
+    static uint32_t kernel_sp;
+    switch_context(&kernel_sp, &thread_a.sp);
 
     for (;;) {
         __asm__ __volatile__("wfi");
