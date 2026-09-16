@@ -110,12 +110,57 @@ end:
     va_end(vararg);
 }
 
+#define READ_CSR(reg)                                             \
+    ({                                                            \
+        unsigned long __tmp;                                      \
+        __asm__ __volatile__("csrr %0, " #reg : "=r"(__tmp));     \
+        __tmp;                                                    \
+    })
+
+#define WRITE_CSR(reg, value) __asm__ __volatile__("csrw " #reg ", %0" ::"r"(value))
+
+// A CPU normally just keeps executing the next instruction, but on a
+// syscall, an interrupt from hardware, or (here) an invalid instruction,
+// it instead "traps": control transfers to whatever address is in stvec.
+// This handler doesn't do anything to fix the situation -- it just
+// reports it and halts, which is enough to prove the trap plumbing
+// itself works. Handling traps well enough to *resume* the interrupted
+// code (needed once threads/syscalls exist) is Step 4's job.
+void handle_trap(uint32_t scause, uint32_t sepc) {
+    printf("\nPANIC: unexpected trap scause=%x, sepc=%x\n", scause, sepc);
+    for (;;) {
+        __asm__ __volatile__("wfi");
+    }
+}
+
+// scause/sepc are read directly into a0/a1 here so they land exactly
+// where handle_trap(scause, sepc) expects its arguments -- no need to
+// save every register first since this handler never returns to the
+// trapping code. RISC-V requires stvec (which holds this function's
+// address) to be 4-byte aligned.
+__attribute__((naked))
+__attribute__((aligned(4)))
+void kernel_entry(void) {
+    __asm__ __volatile__(
+        "csrr a0, scause\n"
+        "csrr a1, sepc\n"
+        "call handle_trap\n"
+    );
+}
+
 void kernel_main(void) {
     // The linker only reserves space for .bss; nothing has zeroed it yet.
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
 
+    WRITE_CSR(stvec, (uint32_t)kernel_entry);
+
     printf("\n\nHello World!\n");
     printf("1 + 2 = %d, 0x%x\n", 1 + 2, 0x1234abcd);
+
+    // Deliberately trigger a trap to prove the handler above actually
+    // runs: `unimp` is a reserved all-zero instruction encoding RISC-V
+    // guarantees will always be illegal.
+    __asm__ __volatile__("unimp");
 
     for (;;) {
         __asm__ __volatile__("wfi");
