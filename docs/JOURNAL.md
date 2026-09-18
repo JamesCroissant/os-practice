@@ -127,3 +127,44 @@ and immediately yield to the other, forever.
 by the harness's own timeout-kill message. Confirms both directions of
 the switch work repeatedly (not just once) and that no register/stack
 corruption creeps in over ~200k round trips.
+
+## Step 5: scheduler
+
+The talk itself stops at two threads directly naming each other
+(`thread_a` calls `switch_context` on `thread_b` and vice versa) and
+says, in closing, that this doesn't scale: a third or fourth thread has
+nowhere hardcoded to hand off to, so *something* has to decide who runs
+next. That something is a scheduler.
+
+`threads[MAX_THREADS]` replaces the two named globals with a pool, each
+slot tagged `THREAD_UNUSED` or `THREAD_RUNNABLE`. `thread_create(entry)`
+claims the first free slot and initializes it exactly as `thread_init`
+did before. `yield()` is the scheduler itself: starting just after
+`current_thread`'s own slot, it scans round-robin for the next
+`THREAD_RUNNABLE` thread and switches to it. Threads no longer call
+`switch_context` directly or know who they're yielding to — they just
+call `yield()`.
+
+`idle_thread` stands in for `kernel_main`'s own execution before the
+first `yield()` hands off to whichever thread the scheduler picks; it's
+never in the pool and never selected as a destination, only ever a place
+for `current_thread` to point at momentarily.
+
+Three threads now (`thread_a`/`thread_b`/`thread_c`, printing A/B/C) —
+deliberately more than the two the direct-handoff version could ever
+generalize beyond.
+
+**Verified**: over 400,000 characters of serial output following the
+Step 1-2 lines are exactly `ABCABCABC...`, confirming round-robin order
+across three independently-created threads holds over hundreds of
+thousands of switches, not just for the first few.
+
+(Side note on this step's own debugging: `-serial mon:stdio` -- used for
+every earlier step's verification -- started silently producing zero
+output when re-tested in this session, unrelated to any kernel code
+change (a bare OpenSBI boot with no kernel at all also produced nothing).
+Swapping to `-serial stdio -monitor none` for the verification commands
+in this environment resolved it immediately. `Makefile`'s `make run`
+target still uses `mon:stdio`, since it's meant for a real interactive
+terminal, where that combination is standard and gives access to the
+QEMU monitor via `Ctrl-A C`.)

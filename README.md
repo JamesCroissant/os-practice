@@ -8,7 +8,7 @@ as a hands-on companion to
 
 The point isn't to build a usable OS. It's the same idea as the talk: an OS
 looks intimidatingly huge, but its first steps (boot, talk to the firmware,
-handle a trap, switch between two execution contexts) are small and
+handle a trap, switch between execution contexts) are small and
 understandable — you can write and run them yourself in an afternoon.
 
 ## What's implemented
@@ -18,11 +18,14 @@ understandable — you can write and run them yourself in an afternoon.
 - **SBI calls**: the RISC-V equivalent of a syscall, from kernel (S-mode) to
   firmware (M-mode) — used to implement `putchar` and, on top of that, a
   small `printf` (`%s`, `%d`, `%x`, `%%`).
-- **Trap handling**: saving full CPU state on entry, reading `scause`/`sepc`
-  to report what happened (deliberately triggered here with an illegal
-  instruction, matching the talk's demo).
-- **Context switching**: two kernel threads that yield the CPU to each other
-  by saving/restoring callee-saved registers on their own stacks.
+- **Trap handling**: reading `scause`/`sepc` on entry to report what happened
+  (deliberately triggered here with an illegal instruction, matching the
+  talk's demo), then halting.
+- **Context switching**: kernel threads that give up the CPU by
+  saving/restoring callee-saved registers on their own stacks.
+- **Scheduler**: a fixed-size thread pool and round-robin `yield()` —
+  extending past the talk's own two hardcoded threads to three
+  independently-created ones.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including one real bug hit and fixed while building this (a PIE/build-id
