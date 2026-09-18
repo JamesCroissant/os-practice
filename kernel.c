@@ -1,4 +1,5 @@
 #include <stdarg.h>
+#include <stddef.h>  // NULL only -- freestanding-safe, no libc functions
 
 typedef unsigned char uint8_t;
 typedef unsigned int uint32_t;
@@ -157,8 +158,14 @@ void kernel_entry(void) {
 // code/globals are shared between threads anyway.
 #define THREAD_STACK_SIZE 8192
 
+enum thread_state {
+    THREAD_UNUSED,
+    THREAD_RUNNABLE,
+};
+
 struct thread {
     uint32_t sp;
+    enum thread_state state;
     uint8_t stack[THREAD_STACK_SIZE];
 };
 
@@ -223,21 +230,81 @@ void thread_init(struct thread *th, void (*entry)(void)) {
     th->sp = (uint32_t)sp;
 }
 
-struct thread thread_a, thread_b;
+// A fixed-size pool instead of thread_a/thread_b as named globals: with a
+// hardcoded pair, each thread can only ever hand off to "the other one",
+// hardcoded by name. That stops working the moment there's a third
+// thread -- with N threads, *something* has to decide who runs next.
+// That something is the scheduler below.
+#define MAX_THREADS 8
 
-void thread_b_entry(void);
+struct thread threads[MAX_THREADS];
+
+// Represents kernel_main's own execution while it's not running any of
+// the threads above. It's never in the pool and never picked by yield()
+// as a destination -- only ever a place for its own state to be saved
+// while some thread runs -- so its `state` field is simply never read.
+struct thread idle_thread;
+struct thread *current_thread = &idle_thread;
+
+struct thread *thread_create(void (*entry)(void)) {
+    for (int i = 0; i < MAX_THREADS; i++) {
+        if (threads[i].state == THREAD_UNUSED) {
+            thread_init(&threads[i], entry);
+            threads[i].state = THREAD_RUNNABLE;
+            return &threads[i];
+        }
+    }
+    printf("PANIC: no free thread slots\n");
+    for (;;) {
+        __asm__ __volatile__("wfi");
+    }
+}
+
+// Round-robin: starting just after the current thread's slot, find the
+// next RUNNABLE one and switch to it. A thread never needs to know who
+// it's handing off to -- it just calls yield() and trusts the scheduler.
+void yield(void) {
+    int current_index = (int)(current_thread - threads);  // negative/out-of-range for idle_thread, which is fine: it's never a valid match below
+
+    struct thread *next = NULL;
+    for (int offset = 1; offset <= MAX_THREADS; offset++) {
+        int i = (current_index + offset) % MAX_THREADS;
+        if (i < 0) {
+            i += MAX_THREADS;
+        }
+        if (threads[i].state == THREAD_RUNNABLE) {
+            next = &threads[i];
+            break;
+        }
+    }
+
+    if (next == NULL || next == current_thread) {
+        return;  // nothing else runnable; keep running (or stay idle)
+    }
+
+    struct thread *prev = current_thread;
+    current_thread = next;
+    switch_context(&prev->sp, &next->sp);
+}
 
 void thread_a_entry(void) {
     for (;;) {
         printf("A");
-        switch_context(&thread_a.sp, &thread_b.sp);
+        yield();
     }
 }
 
 void thread_b_entry(void) {
     for (;;) {
         printf("B");
-        switch_context(&thread_b.sp, &thread_a.sp);
+        yield();
+    }
+}
+
+void thread_c_entry(void) {
+    for (;;) {
+        printf("C");
+        yield();
     }
 }
 
@@ -250,14 +317,16 @@ void kernel_main(void) {
     printf("\n\nHello World!\n");
     printf("1 + 2 = %d, 0x%x\n", 1 + 2, 0x1234abcd);
 
-    thread_init(&thread_a, thread_a_entry);
-    thread_init(&thread_b, thread_b_entry);
+    // Three threads, not two -- proving the scheduler actually decides
+    // who runs next instead of two threads just hardcoding each other.
+    thread_create(thread_a_entry);
+    thread_create(thread_b_entry);
+    thread_create(thread_c_entry);
 
-    // kernel_main's own "thread" is never switched back into -- thread_a
-    // and thread_b only ever hand the CPU to each other -- so its saved
-    // sp has nowhere to go but this one-off local.
-    static uint32_t kernel_sp;
-    switch_context(&kernel_sp, &thread_a.sp);
+    // kernel_main is current_thread's placeholder (idle_thread) until
+    // this first yield() hands off to whichever thread the scheduler
+    // picks; nothing ever switches back to idle_thread afterwards.
+    yield();
 
     for (;;) {
         __asm__ __volatile__("wfi");
