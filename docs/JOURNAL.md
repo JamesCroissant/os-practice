@@ -168,3 +168,62 @@ in this environment resolved it immediately. `Makefile`'s `make run`
 target still uses `mon:stdio`, since it's meant for a real interactive
 terminal, where that combination is standard and gives access to the
 QEMU monitor via `Ctrl-A C`.)
+
+## Step 6: preemptive scheduling via timer interrupt
+
+Everything so far is cooperative: a thread only ever gives up the CPU by
+calling `yield()` itself. The talk's own closing remarks point at what's
+missing without saying it outright -- a thread that never calls `yield()`
+would simply hang onto the CPU forever. Fixing that needs a hardware
+timer interrupt to force a switch, tying the trap handler (Step 3) and
+the scheduler (Step 5) together for the first time.
+
+**Enabling it**: `sie` bit 5 (STIE, supervisor timer interrupt enable),
+`sstatus` bit 1 (SIE, global S-mode interrupt enable), then arm the first
+interrupt via the SBI legacy "Set Timer" extension (EID 0) with an
+absolute `time` value read via the `time`/`timeh` CSRs (RV32 exposes the
+64-bit mtimer as two 32-bit halves; `read_time()` re-checks the high half
+after reading the low one to avoid catching a rollover mid-read). There's
+no periodic mode — each timer interrupt has to re-arm the next one
+itself.
+
+**Full register save, and `sret`**: Step 3's trap handler only ever
+panicked, so it never needed to resume anything. A timer interrupt is
+different — it has to return exactly to whatever the interrupted thread
+was doing, mid-instruction-sequence, not just at a function-call
+boundary — so `kernel_entry` now saves all 30 non-zero, non-sp registers
+(not just the 13 callee-saved ones `switch_context` cares about) and
+ends with `sret` instead of halting. `handle_trap` takes a
+`struct trap_frame *` matching that layout; on a supervisor timer
+interrupt (`scause == 0x80000005`) it re-arms the timer and calls
+`yield()`, which may switch to a completely different thread's stack.
+Handling that correctly means a `switch_context` call nested *inside* a
+trap frame, on the same physical stack — this only works because
+`switch_context` was already written generically enough to not care what
+called it.
+
+**The bug this step actually hit**: after wiring all that up, the timer
+only ever fired once in 3 seconds of runtime, not the expected ~28.
+`-d int` showed why: thousands of `supervisor_ecall` traps (every
+`putchar`) but only a single `s_timer` interrupt, total. RISC-V trap
+entry automatically clears `sstatus.SIE` and `sret` automatically
+restores it from `sstatus.SPIE` — but a *freshly created* thread's first
+run never executes an `sret` at all: `switch_context`'s `ret` jumps
+straight to the thread's entry point, since there's no suspended trap to
+resume. The first timer interrupt (while `thread_a` was running solo)
+preempted into `thread_b`'s brand-new context — which then ran with
+interrupts silently still disabled from that trap, so the *next* timer
+interrupt fired the hardware timer but was never delivered.
+
+Fix: every new thread's saved `ra` now points at `thread_trampoline`
+(with the real entry function stashed in the saved `s0` slot instead),
+which explicitly does `csrsi sstatus, 2` before jumping to the real
+entry — closing exactly the gap that skipping `sret` left open.
+
+**Verified**: three threads (still A/B/C, still no `yield()` calls in
+their bodies at all) produce output in clean, single-letter runs of
+roughly 10,000-15,000 characters each, in strict `A, B, C, A, B, C, ...`
+order — 29 runs matching 28 traced timer interrupts. Confirms preemption
+now recurs correctly (not just once), stays fair across threads that
+never cooperate, and correctly resumes a previously-interrupted thread's
+exact register state each time it comes back around.

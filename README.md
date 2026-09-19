@@ -18,18 +18,23 @@ understandable — you can write and run them yourself in an afternoon.
 - **SBI calls**: the RISC-V equivalent of a syscall, from kernel (S-mode) to
   firmware (M-mode) — used to implement `putchar` and, on top of that, a
   small `printf` (`%s`, `%d`, `%x`, `%%`).
-- **Trap handling**: reading `scause`/`sepc` on entry to report what happened
-  (deliberately triggered here with an illegal instruction, matching the
-  talk's demo), then halting.
+- **Trap handling**: full register save/restore, so a trap can either
+  panic (reporting `scause`/`sepc`, matching the talk's illegal-
+  instruction demo) or actually resume whatever it interrupted.
 - **Context switching**: kernel threads that give up the CPU by
   saving/restoring callee-saved registers on their own stacks.
 - **Scheduler**: a fixed-size thread pool and round-robin `yield()` —
   extending past the talk's own two hardcoded threads to three
   independently-created ones.
+- **Preemption**: a timer interrupt forces a switch even for threads that
+  never call `yield()` themselves — ties the trap handler and scheduler
+  together.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
-including one real bug hit and fixed while building this (a PIE/build-id
-linking issue that made QEMU jump into non-code bytes).
+including two real bugs hit and fixed while building this (a PIE/
+build-id linking issue that made QEMU jump into non-code bytes, and an
+interrupt-enable bit that silently stayed cleared after switching into a
+never-before-run thread).
 
 ## Building and running
 
