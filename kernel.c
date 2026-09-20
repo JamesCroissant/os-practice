@@ -338,6 +338,10 @@ __attribute__((naked)) void switch_context(uint32_t *prev_sp __attribute__((unus
     );
 }
 
+// Forward-declared so thread_trampoline can call it below -- defined
+// later, once current_thread and yield() exist.
+__attribute__((noreturn)) void thread_exit(void);
+
 // A thread switched to via a timer interrupt normally resumes through
 // kernel_entry's own `sret`, which is what re-enables interrupts
 // (hardware automatically clears sstatus.SIE on trap entry and restores
@@ -347,13 +351,17 @@ __attribute__((naked)) void switch_context(uint32_t *prev_sp __attribute__((unus
 // running with interrupts still disabled from whatever trap led here,
 // silently killing all future preemption. This trampoline is what every
 // new thread's saved "ra" actually points to, so that gap has exactly
-// one place to be closed: enable interrupts explicitly, then jump to the
+// one place to be closed: enable interrupts explicitly, then call the
 // real entry point (left in s0 by thread_init, and reloaded into s0 by
-// switch_context's own restore before we get here).
+// switch_context's own restore before we get here) -- `jalr`, not `jr`,
+// so a thread whose entry function returns normally (unlike thread_a/b/c,
+// which never do) falls into thread_exit instead of jumping into
+// whatever garbage instructions happen to sit after this function.
 __attribute__((naked)) void thread_trampoline(void) {
     __asm__ __volatile__(
         "csrsi sstatus, 2\n"  // sstatus.SIE (bit 1) = 1
-        "jr s0\n"
+        "jalr s0\n"
+        "call thread_exit\n"
     );
 }
 
@@ -426,6 +434,22 @@ void yield(void) {
     switch_context(&prev->sp, &next->sp);
 }
 
+// Reached when a thread's entry function returns, via thread_trampoline's
+// `call` after `jalr s0` (see above) -- not just on explicit request.
+// There's nowhere to "return" to (the trampoline that got it here wasn't
+// called from anywhere resumable), so this is the only sane thing left to
+// do: mark the slot free, so thread_create can reuse it, and give up the
+// CPU for good. The trailing loop never actually runs a second iteration
+// in practice -- once state is THREAD_UNUSED, yield() can never pick this
+// thread again, so the first yield() call here is also the last time this
+// stack is ever touched.
+__attribute__((noreturn)) void thread_exit(void) {
+    current_thread->state = THREAD_UNUSED;
+    for (;;) {
+        yield();
+    }
+}
+
 // No yield() calls in these bodies anymore -- on purpose. If interleaved
 // A/B/C output still shows up, that proves the timer interrupt is
 // genuinely preempting a thread that never asks to give up the CPU,
@@ -445,6 +469,16 @@ void thread_b_entry(void) {
 void thread_c_entry(void) {
     for (;;) {
         printf("C");
+    }
+}
+
+// Unlike thread_a/b/c (deliberately infinite, to prove preemption keeps
+// working on a thread that never cooperates), this one does finite work
+// and returns -- to prove thread_exit's path through thread_trampoline
+// actually runs, not just that it compiles.
+void thread_d_entry(void) {
+    for (int i = 0; i < 5; i++) {
+        printf("D");
     }
 }
 
@@ -471,6 +505,7 @@ void kernel_main(void) {
     thread_create(thread_a_entry);
     thread_create(thread_b_entry);
     thread_create(thread_c_entry);
+    thread_create(thread_d_entry);
 
     // kernel_main is current_thread's placeholder (idle_thread) until
     // this first yield() hands off to whichever thread the scheduler
