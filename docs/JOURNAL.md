@@ -227,3 +227,36 @@ order — 29 runs matching 28 traced timer interrupts. Confirms preemption
 now recurs correctly (not just once), stays fair across threads that
 never cooperate, and correctly resumes a previously-interrupted thread's
 exact register state each time it comes back around.
+
+## Step 7: thread exit
+
+Every thread so far (`thread_a`/`b`/`c`) is written as an infinite loop,
+so the question of what happens when a thread's entry function actually
+*returns* never came up -- but nothing stopped a thread from being written
+that way, and `switch_context`'s `ret` landing in `thread_trampoline`
+followed by a bare `jr s0` meant a returning entry function would fall
+into whatever instructions happen to sit right after `thread_trampoline`
+in memory. Not a hang, not a crash with a useful `scause` -- just silent
+execution of garbage.
+
+Fix: `thread_trampoline` now uses `jalr s0` (a call, not a tail-jump) so
+`s0`'s return address is `thread_trampoline`'s own next instruction,
+followed by `call thread_exit`. `thread_exit` marks the current thread's
+slot `THREAD_UNUSED` and calls `yield()` in a loop -- it can't free its
+own stack while still running on it, so it just gives up the CPU
+permanently instead; since a `THREAD_UNUSED` slot is never selected by
+`yield()`'s scan, that first `yield()` call is also the last time this
+thread ever runs.
+
+A fourth thread, `thread_d`, exists solely to exercise this path: unlike
+`a`/`b`/`c` it does finite work (prints `D` five times) and returns
+normally.
+
+**Verified**: captured 3 seconds of serial output. The five `D`s appear
+as exactly one contiguous run (`DDDDD`, confirmed by scanning byte
+offsets, not just eyeballing) partway through the capture, and never
+again afterward, while `A`/`B`/`C` keep running in the same interleaved
+pattern as before for the rest of the run — confirming `thread_d` ran
+once, returned through the new trampoline path without corrupting
+anything, and was correctly excluded from the scheduler's rotation from
+then on.

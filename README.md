@@ -29,6 +29,9 @@ understandable — you can write and run them yourself in an afternoon.
 - **Preemption**: a timer interrupt forces a switch even for threads that
   never call `yield()` themselves — ties the trap handler and scheduler
   together.
+- **Thread exit**: a thread whose entry function returns (instead of
+  looping forever, like the demo threads) frees its slot for reuse
+  instead of jumping into whatever happens to follow it in memory.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
