@@ -32,12 +32,19 @@ understandable — you can write and run them yourself in an afternoon.
 - **Thread exit**: a thread whose entry function returns (instead of
   looping forever, like the demo threads) frees its slot for reuse
   instead of jumping into whatever happens to follow it in memory.
+- **Physical memory allocation**: a bump page allocator hands out zeroed
+  RAM from a region reserved in the linker script — thread stacks now
+  come from it instead of being embedded, unused-or-not, in every pool
+  slot's `.bss`.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
 build-id linking issue that made QEMU jump into non-code bytes, and an
 interrupt-enable bit that silently stayed cleared after switching into a
 never-before-run thread).
+
+`make run` now passes QEMU `-m 128M` explicitly: the page allocator's
+region, reserved in `kernel.ld`, is sized against that assumption.
 
 ## Building and running
 

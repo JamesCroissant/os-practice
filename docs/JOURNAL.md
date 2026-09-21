@@ -260,3 +260,40 @@ pattern as before for the rest of the run — confirming `thread_d` ran
 once, returned through the new trampoline path without corrupting
 anything, and was correctly excluded from the scheduler's rotation from
 then on.
+
+## Step 8: physical memory allocation
+
+Every thread's stack so far has been a `uint8_t stack[THREAD_STACK_SIZE]`
+array embedded directly in its `struct thread` slot — reserved in `.bss`
+for all `MAX_THREADS` slots whether or not a thread is ever created in
+them. That was fine as long as the only thing anyone needed memory for
+*was* a thread stack; it stops being fine the moment something else
+(a page table, a buffer for a driver) also needs RAM, since there's
+nowhere to ask for it from.
+
+`alloc_pages(n)` is a minimal fix: a bump allocator over a region
+(`__free_ram` to `__free_ram_end`) that `kernel.ld` now reserves in the
+`.bss`-and-stack tail, sized at 64MB against the 128MB QEMU is now told
+to give the machine explicitly (`-m 128M`, previously left at whatever
+QEMU's default happened to be — the allocator's region has to be sized
+against a number that's actually guaranteed, not assumed). It never
+frees, so no free-list is needed yet: nothing in this kernel has a
+lifetime shorter than "forever" so far (`thread_exit` frees a *thread
+slot* for `thread_create` to reuse, not the physical memory backing that
+thread's stack). It zeroes what it hands out — stale bytes from OpenSBI
+or an earlier boot aren't safe to hand a new thread as its stack.
+
+`thread_init` now calls `alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE)`
+instead of pointing into its own embedded array, and `struct thread`
+drops the array entirely. This is the allocator's first real caller, not
+a toy demo bolted on beside the real code: if it handed back overlapping
+or non-zeroed memory, thread stacks would corrupt each other immediately.
+
+**Verified**: `readelf -s` confirms `__free_ram_end` (`0x84221000`) sits
+comfortably below the 128MB ceiling (`0x88000000` from a `0x80000000`
+base). Re-ran the same 3-second capture used to verify Step 7: `thread_d`
+still prints exactly one contiguous run of 5 `D`s and exits cleanly,
+`thread_a`/`b`/`c` keep interleaving correctly for the rest of the run
+with no panic and no corruption — confirming stacks now allocated from
+the page allocator behave identically to the previous embedded-array
+ones, which is exactly what should happen when the allocation is correct.
