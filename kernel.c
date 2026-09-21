@@ -7,8 +7,9 @@ typedef unsigned long long uint64_t;
 typedef uint32_t size_t;
 
 // Provided by kernel.ld: the bounds of the zero-initialized data segment,
-// and the top of the stack region reserved after it.
-extern char __bss[], __bss_end[], __stack_top[];
+// the top of the stack region reserved after it, and the range handed out
+// by alloc_pages() below.
+extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[];
 
 void *memset(void *buf, char c, size_t n) {
     uint8_t *p = (uint8_t *)buf;
@@ -110,6 +111,37 @@ void printf(const char *fmt, ...) {
     }
 end:
     va_end(vararg);
+}
+
+#define PAGE_SIZE 4096
+
+// A physical address -- worth its own name starting now, even though
+// it's just a uint32_t today, so that the distinction from an ordinary
+// pointer (a distinction that starts to matter the moment virtual memory
+// exists) isn't something to retrofit later.
+typedef uint32_t paddr_t;
+
+// A bump allocator: hands out the next `n` pages and never frees, so it
+// needs no free-list. Nothing in this kernel has a lifetime shorter than
+// "forever" yet -- thread_exit() frees a *thread slot* for reuse, not the
+// physical memory backing that thread's stack. Zeroes what it hands out,
+// since leftover bytes from OpenSBI or an earlier boot aren't safe to
+// hand a new thread as its stack.
+paddr_t alloc_pages(uint32_t n) {
+    static paddr_t next_free = (paddr_t)__free_ram;
+
+    paddr_t addr = next_free;
+    uint32_t size = n * PAGE_SIZE;
+    if (next_free + size > (paddr_t)__free_ram_end) {
+        printf("PANIC: out of memory\n");
+        for (;;) {
+            __asm__ __volatile__("wfi");
+        }
+    }
+    next_free += size;
+
+    memset((void *)addr, 0, size);
+    return addr;
 }
 
 #define READ_CSR(reg)                                             \
@@ -287,7 +319,6 @@ enum thread_state {
 struct thread {
     uint32_t sp;
     enum thread_state state;
-    uint8_t stack[THREAD_STACK_SIZE];
 };
 
 // Pushes the 13 callee-saved words onto the current stack, records where
@@ -368,10 +399,16 @@ __attribute__((naked)) void thread_trampoline(void) {
 // Prepares a thread that has never run yet: switch_context's restore
 // side always pops 13 words expecting ra, s0..s11 in that order, so a
 // brand new thread needs that exact frame pre-built on its own stack.
+// The stack itself now comes from alloc_pages() rather than living
+// embedded in struct thread -- a real allocation from the same pool
+// everything else will eventually share, not a fixed .bss reservation
+// per pool slot regardless of whether it's ever used.
 void thread_init(struct thread *th, void (*entry)(void)) {
-    uint32_t *sp = (uint32_t *)(th->stack + sizeof(th->stack));
+    paddr_t stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
+    uint32_t *sp = (uint32_t *)(stack_bottom + THREAD_STACK_SIZE);
     sp -= 13;
-    memset(sp, 0, 13 * sizeof(uint32_t));
+    // No need to zero sp[2..12] (s1-s11) here -- alloc_pages() already
+    // zeroed the whole stack. Only sp[0]/sp[1] (ra/s0) carry real values.
     sp[0] = (uint32_t)thread_trampoline;  // ra
     sp[1] = (uint32_t)entry;              // s0 -- read by the trampoline above
     th->sp = (uint32_t)sp;

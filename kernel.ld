@@ -26,4 +26,12 @@ SECTIONS {
     . = ALIGN(4);
     . += 128 * 1024; /* 128KB kernel stack */
     __stack_top = .;
+
+    /* Everything past here, up to the end of RAM (see Makefile's -m 128M),
+       is handed out by alloc_pages() -- a page allocator has to own a
+       range it's sure nothing else is using. */
+    . = ALIGN(4096);
+    __free_ram = .;
+    . += 64 * 1024 * 1024; /* 64MB, well inside the 128MB RAM given to QEMU */
+    __free_ram_end = .;
 }

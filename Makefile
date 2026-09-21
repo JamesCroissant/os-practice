@@ -19,7 +19,7 @@ kernel.elf: $(SRCS) kernel.ld
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
 
 run: kernel.elf
-	$(QEMU) -machine virt -bios $(OPENSBI) -nographic -serial mon:stdio \
+	$(QEMU) -machine virt -m 128M -bios $(OPENSBI) -nographic -serial mon:stdio \
 		-kernel kernel.elf
 
 clean:
