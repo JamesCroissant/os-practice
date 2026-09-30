@@ -36,6 +36,10 @@ understandable — you can write and run them yourself in an afternoon.
   RAM from a region reserved in the linker script — thread stacks now
   come from it instead of being embedded, unused-or-not, in every pool
   slot's `.bss`.
+- **Virtual memory**: Sv32 page tables, built and switched on at boot —
+  identity-mapped for now (no user mode exists yet to need anything
+  else), but the addressing every later process needs is real from here
+  on, not retrofitted.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/

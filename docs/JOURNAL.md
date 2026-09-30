@@ -297,3 +297,47 @@ still prints exactly one contiguous run of 5 `D`s and exits cleanly,
 with no panic and no corruption — confirming stacks now allocated from
 the page allocator behave identically to the previous embedded-array
 ones, which is exactly what should happen when the allocation is correct.
+
+## Step 9: virtual memory (Sv32 page tables)
+
+Every address used so far -- code fetches, stack accesses, the pages
+`alloc_pages()` hands out -- has been a physical address, straight into
+RAM. That's fine for a kernel that's one flat address space, but it's
+also exactly what has to stop being true before user mode can exist:
+different processes need the *same* virtual address (say, where their
+code starts) to mean different physical memory. Sv32 -- RV32's 2-level
+page table format -- is the mechanism; it has to go in before user mode,
+not after, since user mode has nothing to run in without it.
+
+`map_page(table1, vaddr, paddr, flags)` builds one page's worth of
+mapping: a 10-bit `vpn1` indexes the root table (itself exactly one
+page -- 1024 4-byte PTEs) to find or lazily allocate a second-level
+table, and a 10-bit `vpn0` indexes *that* to place the leaf PTE. Lazy
+allocation matters here for the same reason `alloc_pages()` itself
+matters: pre-allocating all 1024 possible second-level tables up front,
+to cover a 4GB address space that (for this kernel) maps only ~66MB of
+it, would waste far more memory than it saves.
+
+`kernel_main` now builds one page table identity-mapping the entire
+kernel image *and* the whole `alloc_pages()` range -- virtual address
+equals physical address for every page mapped, deliberately, so nothing
+written before this step (or since -- the thread stacks `alloc_pages()`
+hands out later) has to change to keep working once translation turns
+on. Mapping the *whole* free-RAM range up front, not just what's
+allocated so far, is what makes that "later" safe: a thread created after
+boot still gets a stack inside an already-mapped region. `enable_paging()`
+writes the mode bit and root table's physical page number into `satp`,
+then `sfence.vma` -- required, not optional, since the CPU is free to
+have cached a translation (or the absence of one) from before the write.
+
+**Verified**: `kernel_main` now prints `satp` right after enabling
+paging: `satp=80080221`. Bit 31 set confirms Sv32 mode; the PPN field
+(`0x80221`) times 4096 is `0x80221000` -- which `readelf -s` confirms is
+exactly `__free_ram`, i.e. the very first page `alloc_pages()` ever
+handed out (used for `kernel_page_table` itself, before any thread stack
+was allocated). Re-ran the same 3-second capture again: `thread_d` still
+prints exactly one contiguous run of 5 `D`s and exits cleanly, `thread_a`/
+`b`/`c` keep interleaving with no panic -- confirming the kernel runs
+identically with translation on, which is exactly what a correct identity
+mapping should produce, and that traps (`stvec`), context switches, and
+SBI calls all keep working through the switch to paged addressing.
