@@ -3,6 +3,7 @@ ENTRY(boot)
 SECTIONS {
     /* OpenSBI (fw_dynamic) jumps to S-mode here on the QEMU "virt" machine. */
     . = 0x80200000;
+    __kernel_base = .;
 
     .text :{
         KEEP(*(.text.boot));

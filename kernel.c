@@ -6,10 +6,10 @@ typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
 typedef uint32_t size_t;
 
-// Provided by kernel.ld: the bounds of the zero-initialized data segment,
-// the top of the stack region reserved after it, and the range handed out
-// by alloc_pages() below.
-extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[];
+// Provided by kernel.ld: where the kernel image starts, the bounds of the
+// zero-initialized data segment, the top of the stack region reserved
+// after it, and the range handed out by alloc_pages() below.
+extern char __kernel_base[], __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[];
 
 void *memset(void *buf, char c, size_t n) {
     uint8_t *p = (uint8_t *)buf;
@@ -176,6 +176,50 @@ uint64_t read_time(void) {
 void arm_timer(void) {
     uint64_t next = read_time() + TIMER_INTERVAL;
     sbi_call((long)(uint32_t)next, (long)(uint32_t)(next >> 32), 0, 0, 0, 0, 0, 0);
+}
+
+// Virtual memory: every address the CPU has used up to this point has
+// been its physical address, straight into RAM. That stops being an
+// option the moment there's more than one address space (one per
+// process) -- Sv32 (RV32's page table format) is what makes "the same
+// virtual address means something different depending on who's running"
+// possible at all, and it has to exist before user mode can, not after.
+#define PAGE_V (1 << 0)  // valid
+#define PAGE_R (1 << 1)  // readable
+#define PAGE_W (1 << 2)  // writable
+#define PAGE_X (1 << 3)  // executable
+#define PAGE_U (1 << 4)  // user-mode accessible -- unused until user mode exists
+
+// Sv32 is a 2-level table: a 32-bit virtual address splits into a 10-bit
+// vpn1 (indexes the root table, itself exactly one page of 1024 4-byte
+// PTEs), a 10-bit vpn0 (indexes a second-level table the root's PTE
+// points at), and a 12-bit page offset. The second-level table is
+// allocated lazily, on first use for a given vpn1 -- most of a 4GB
+// address space maps nothing at all, so pre-allocating all 1024 possible
+// second-level tables up front would waste far more memory than the
+// laziness saves here.
+void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
+    uint32_t vpn1 = (vaddr >> 22) & 0x3ff;
+    if ((table1[vpn1] & PAGE_V) == 0) {
+        paddr_t table0_paddr = alloc_pages(1);
+        table1[vpn1] = ((table0_paddr / PAGE_SIZE) << 10) | PAGE_V;
+    }
+
+    uint32_t *table0 = (uint32_t *)((table1[vpn1] >> 10) * PAGE_SIZE);
+    uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
+    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
+}
+
+#define SATP_SV32 (1u << 31)
+
+// Turns on Sv32 translation: satp holds the mode bit plus the root
+// table's physical page number. sfence.vma afterward is required, not
+// optional -- the CPU is free to have cached translations (or the
+// absence of one) from before this write, and nothing else tells it to
+// stop trusting that cache.
+void enable_paging(uint32_t *table1) {
+    WRITE_CSR(satp, SATP_SV32 | ((uint32_t)table1 / PAGE_SIZE));
+    __asm__ __volatile__("sfence.vma");
 }
 
 // A CPU normally just keeps executing the next instruction, but on a
@@ -522,6 +566,21 @@ void thread_d_entry(void) {
 void kernel_main(void) {
     // The linker only reserves space for .bss; nothing has zeroed it yet.
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
+
+    // Identity-map the entire kernel image plus everything alloc_pages()
+    // can ever hand out -- virtual address == physical address for every
+    // page mapped here, so nothing above this point, or below it so far,
+    // has to change to keep working once translation is switched on.
+    // Mapping the *whole* free_ram range up front (not just what's
+    // allocated so far) means later allocations -- like the thread stacks
+    // below -- already have valid mappings by the time they're used.
+    uint32_t *kernel_page_table = (uint32_t *)alloc_pages(1);
+    for (paddr_t paddr = (paddr_t)__kernel_base; paddr < (paddr_t)__free_ram_end;
+         paddr += PAGE_SIZE) {
+        map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+    }
+    enable_paging(kernel_page_table);
+    printf("\n\npaging enabled, satp=%x\n", READ_CSR(satp));
 
     WRITE_CSR(stvec, (uint32_t)kernel_entry);
 
