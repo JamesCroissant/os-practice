@@ -341,3 +341,52 @@ prints exactly one contiguous run of 5 `D`s and exits cleanly, `thread_a`/
 identically with translation on, which is exactly what a correct identity
 mapping should produce, and that traps (`stvec`), context switches, and
 SBI calls all keep working through the switch to paged addressing.
+
+## Step 10: per-thread `sepc`/`sstatus` (a latent scheduling bug)
+
+While sketching out what user mode would need next, a real problem
+turned up: `kernel_entry` saves and restores all 30 GPRs per thread, but
+`sepc` and `sstatus` are CSRs, not GPRs -- `handle_trap` only ever reads
+them into local variables, and nothing writes them back per-thread.
+`sret`, at the end of `kernel_entry`, uses whatever the *hardware*
+currently holds in those CSRs -- which is simply whatever the most
+recent *actual* trap set them to.
+
+That matters because `yield()` doesn't necessarily resume the thread
+that just trapped. Trace: thread A traps (sepc = A's own interrupted
+PC), `yield()` picks B, `switch_context` swaps onto B's stack and does a
+plain `ret` -- landing back inside B's *own*, long-dormant call chain
+(its earlier `yield()` → `handle_trap()` → `kernel_entry`'s tail),
+entirely through ordinary C-level returns, no new hardware trap anywhere
+in that unwind. By the time B's `kernel_entry` reaches its own `sret`,
+the CSR `sepc` is still A's, not B's.
+
+Confirmed with `qemu -d int`: every single `s_timer` trap, across an
+unmodified capture, landed at the exact same `epc` (`0x8020014e`,
+`objdump` places it right after `printf`'s SBI `ecall`). Not a
+coincidence -- `thread_a`/`b`/`c`/`d`'s entire bodies live inside
+`printf()`, one shared function, so *every* thread's own trap happens at
+that same address anyway. The bug was real from the start; it just had
+no way to become visible, since "the wrong thread's stale sepc" and
+"this thread's own correct sepc" were, by construction, always equal.
+
+Fix: `struct trap_frame` grows two fields, `sepc` and `sstatus`;
+`kernel_entry` now `csrr`s both into the frame right after saving the 30
+GPRs (reusing the already-saved `t0` as scratch -- its real value sits
+safely in slot 3 by then) and `csrw`s them back from the frame before
+restoring the GPRs and `sret`ing. Each thread's own stack now carries
+its own correct values, independent of whatever the CSRs most recently
+held.
+
+**Verified**: added `thread_e`, deliberately unlike `a`/`b`/`c`/`d` --
+almost all of its time is a plain busy-loop with no `printf`/`ecall` at
+all, printing `E` only once every million iterations. Its own trap PC
+therefore has to land somewhere genuinely different from the others.
+Re-ran the trace: two distinct `s_timer` epc values now appear
+(`0x80200162`, `objdump`-confirmed still inside `printf`, for
+`a`/`b`/`c`/`d`; `0x802002e0`, confirmed inside `thread_e_entry`'s own
+loop, for `e`) -- proof the scheduler is now resuming threads at their
+*own* trap-time PC, not silently reusing whichever thread trapped most
+recently. 3-second capture: no panic, `thread_d` still exits cleanly
+after exactly 5 `D`s, and `A`/`B`/`C`/`E` all keep interleaving
+correctly for the rest of the run.

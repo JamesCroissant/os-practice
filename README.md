@@ -40,6 +40,10 @@ understandable — you can write and run them yourself in an afternoon.
   identity-mapped for now (no user mode exists yet to need anything
   else), but the addressing every later process needs is real from here
   on, not retrofitted.
+- **Per-thread `sepc`/`sstatus`**: fixes a latent bug where a thread
+  resumed by a *different* thread's trap would `sret` using that other
+  trap's leftover CSR values — invisible until a thread with a genuinely
+  different code shape existed to expose it.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
