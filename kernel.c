@@ -232,11 +232,19 @@ void enable_paging(uint32_t *table1) {
 // just the callee-saved ones switch_context cares about -- an interrupt
 // can land in the middle of any instruction sequence, not just at a
 // function-call boundary) and end with `sret` instead of falling off.
+//
+// sepc and sstatus ride along too, not just the 30 GPRs -- see Step 10's
+// journal entry for why: they're CSRs, not GPRs, so switch_context()
+// switching the stack out from under a suspended trap does nothing to
+// preserve them, and yield() can resume a *different* thread than the one
+// that just trapped, on a stack that's been sitting there since some
+// earlier, unrelated trap.
 struct trap_frame {
     uint32_t ra, gp, tp, t0, t1, t2, s0, s1;
     uint32_t a0, a1, a2, a3, a4, a5, a6, a7;
     uint32_t s2, s3, s4, s5, s6, s7, s8, s9, s10, s11;
     uint32_t t3, t4, t5, t6;
+    uint32_t sepc, sstatus;
 };
 
 #define SCAUSE_SUPERVISOR_TIMER_INTERRUPT 0x80000005
@@ -246,7 +254,8 @@ struct trap_frame {
 void yield(void);
 
 void handle_trap(struct trap_frame *f) {
-    (void)f;  // not inspected yet -- only scause/sepc drive any decision so far
+    (void)f;  // kernel_entry's own asm saves/restores f->sepc/f->sstatus
+              // around this call; nothing here needs to touch them directly
     uint32_t scause = READ_CSR(scause);
     uint32_t sepc = READ_CSR(sepc);
 
@@ -276,7 +285,7 @@ __attribute__((naked))
 __attribute__((aligned(4)))
 void kernel_entry(void) {
     __asm__ __volatile__(
-        "addi sp, sp, -4 * 30\n"
+        "addi sp, sp, -4 * 32\n"
         "sw ra,   4 * 0(sp)\n"
         "sw gp,   4 * 1(sp)\n"
         "sw tp,   4 * 2(sp)\n"
@@ -308,8 +317,27 @@ void kernel_entry(void) {
         "sw t5,   4 * 28(sp)\n"
         "sw t6,   4 * 29(sp)\n"
 
+        // sepc/sstatus onto *this* thread's own trap frame -- t0 is
+        // already safely saved above (slot 3), so it's free to reuse as
+        // scratch here without losing anything.
+        "csrr t0, sepc\n"
+        "sw t0,   4 * 30(sp)\n"
+        "csrr t0, sstatus\n"
+        "sw t0,   4 * 31(sp)\n"
+
         "mv a0, sp\n"
         "call handle_trap\n"
+
+        // Restored before the GPRs below overwrite the t0 used as scratch
+        // just above -- by the time `sret` runs, sepc/sstatus hold *this*
+        // frame's own values, not whatever the CPU's CSRs happened to
+        // hold most recently (which, if yield() resumed a thread other
+        // than the one that just trapped, would belong to that other
+        // trap instead).
+        "lw t0,   4 * 30(sp)\n"
+        "csrw sepc, t0\n"
+        "lw t0,   4 * 31(sp)\n"
+        "csrw sstatus, t0\n"
 
         "lw ra,   4 * 0(sp)\n"
         "lw gp,   4 * 1(sp)\n"
@@ -341,7 +369,7 @@ void kernel_entry(void) {
         "lw t4,   4 * 27(sp)\n"
         "lw t5,   4 * 28(sp)\n"
         "lw t6,   4 * 29(sp)\n"
-        "addi sp, sp, 4 * 30\n"
+        "addi sp, sp, 4 * 32\n"
         "sret\n"
     );
 }
@@ -563,6 +591,23 @@ void thread_d_entry(void) {
     }
 }
 
+// Unlike thread_a/b/c/d, whose entire loop body is inside printf() --
+// meaning every one of *their* timer traps lands at the exact same
+// address (right after printf's own SBI ecall), which is exactly what
+// let Step 10's bug hide undetected -- this thread spends nearly all its
+// time in a plain busy loop with no ecall at all, only printing "E" once
+// every million iterations. A timer interrupt catching this thread lands
+// somewhere completely different from A/B/C/D's shared address, so if
+// sepc/sstatus weren't actually being restored per-thread, resuming this
+// thread after some *other* thread's trap would jump to the wrong place.
+void thread_e_entry(void) {
+    for (;;) {
+        for (volatile uint32_t i = 0; i < 1000000; i++) {
+        }
+        printf("E");
+    }
+}
+
 void kernel_main(void) {
     // The linker only reserves space for .bss; nothing has zeroed it yet.
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
@@ -602,6 +647,7 @@ void kernel_main(void) {
     thread_create(thread_b_entry);
     thread_create(thread_c_entry);
     thread_create(thread_d_entry);
+    thread_create(thread_e_entry);
 
     // kernel_main is current_thread's placeholder (idle_thread) until
     // this first yield() hands off to whichever thread the scheduler
