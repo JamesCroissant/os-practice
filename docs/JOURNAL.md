@@ -390,3 +390,74 @@ loop, for `e`) -- proof the scheduler is now resuming threads at their
 recently. 3-second capture: no panic, `thread_d` still exits cleanly
 after exactly 5 `D`s, and `A`/`B`/`C`/`E` all keep interleaving
 correctly for the rest of the run.
+
+## Step 11: user mode and syscalls
+
+Everything so far runs in S-mode. Sv32 (Step 9) exists specifically to
+make U-mode possible, and Step 10's fix specifically removes the one
+thing that would have made a U-mode thread unsafe to preempt and resume
+through the existing scheduler. This step is the payoff: an actual
+U-mode thread.
+
+**The mechanism**: `enter_user_mode(entry, user_sp)` is a one-way trip,
+the same shape as `thread_trampoline`'s jump into a brand-new thread,
+just crossing a privilege boundary instead of a function-call one --
+write `sepc` (where `sret` lands), clear `sstatus.SPP` (which privilege
+`sret` drops into -- 0 is U), set `sstatus.SPIE` (restored into `SIE` by
+that same `sret`, or this thread would run in U-mode permanently
+un-preemptible), point `sp` at a separate user stack, `sret`.
+
+**The syscall convention is ours, not SBI's.** U-mode's `ecall` traps
+straight to *this* kernel (OpenSBI's `medeleg` delegates "environment
+call from U-mode", cause 8, down to S-mode) -- it never reaches M-mode
+at all, so `sbi_call()` itself is simply unusable from U-mode. `handle_trap`
+dispatches on `f->a3` (syscall number) with one implemented so far,
+`SYS_PUTCHAR`, reading the character from `f->a0`. `ecall` doesn't
+advance `pc` on its own, so the handler sets `f->sepc = sepc + 4` --
+written into the *frame*, not the live CSR, since Step 10 means
+`kernel_entry` now restores `sepc` from there.
+
+**The bug this step actually hit**: the first attempt gave *every*
+mapped page -- kernel code included -- `PAGE_U`, reasoning that real
+per-process isolation was a problem for a later step. The kernel never
+even reached its own first `printf` after enabling paging: `qemu -d int`
+showed an `exec_page_fault` at `0x80200000` (the kernel's own entry
+point), forever, with firmware re-jumping to `Domain0 Next Address`
+(also `0x80200000`) each time and faulting again immediately. The actual
+rule, independent of `sstatus.SUM` (which only governs S-mode
+loads/stores): **S-mode can never execute an instruction fetched from a
+page with `PAGE_U` set, full stop.** Marking the kernel's own code
+`PAGE_U` meant the kernel could no longer execute itself the instant
+translation turned on.
+
+Fix: `PAGE_U` only goes on the specific pages that need it.
+`user_entry`'s code gets a dedicated, page-aligned linker output section
+(`.text.user`, with `__user_text_start`/`__user_text_end`) specifically
+so it can never end up sharing a page with code the kernel itself runs
+-- `kernel.ld`'s main `.text` was narrowed from `*(.text .text.*)` to
+`*(.text)` so its wildcard can't sweep `.text.user` in first. The user
+stack (allocated at runtime via `alloc_pages()`, so it can't be handled
+in the linker script) gets a second, explicit `map_page()` call adding
+`PAGE_U` just to that range. Everything else the main identity-map loop
+covers keeps the Step 9 flags, unchanged (`PAGE_R | PAGE_W | PAGE_X`, no
+`U`).
+
+**Verified**: 3-second capture, no panic. `qemu -d int` shows 80,192
+`user_ecall` (cause 8) events, every one at `epc=0x80201006` --
+`objdump`-confirmed as `user_entry`'s own `ecall` instruction -- and the
+serial output has exactly that many `U`s. `s_timer` events now show
+*three* distinct epc values: `0x80200162` (inside `printf`, for
+`a`/`b`/`c`/`d`), `0x802002e0` (inside `thread_e`'s loop), and
+`0x8020100a` (inside `user_entry`'s own loop, right after its `ecall`) --
+confirming the U-mode thread genuinely gets caught by the timer mid-loop
+and correctly resumes in U-mode afterward, not just that its syscalls
+work. `thread_d` still exits cleanly after exactly 5 `D`s; `A`/`B`/`C`/`E`
+keep interleaving correctly for the whole run.
+
+No real isolation yet -- one page table, shared by every thread, kernel
+and user alike; a U-mode thread could still read or write any *other*
+page that happens to lack `PAGE_U` just by having the kernel map it that
+way, since nothing stops `map_page()` from being called against the same
+table for anything. Per-process page tables are the next thing this
+design was always leaving for later, not a gap found by accident this
+time.

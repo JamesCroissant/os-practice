@@ -44,6 +44,10 @@ understandable — you can write and run them yourself in an afternoon.
   resumed by a *different* thread's trap would `sret` using that other
   trap's leftover CSR values — invisible until a thread with a genuinely
   different code shape existed to expose it.
+- **User mode and syscalls**: a thread that drops to U-mode and talks to
+  the kernel only through `ecall` (its own syscall convention, not
+  SBI's) — preemptible and resumable like any other thread, now that
+  `sepc`/`sstatus` are saved per-thread.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
