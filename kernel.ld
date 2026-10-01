@@ -7,8 +7,22 @@ SECTIONS {
 
     .text :{
         KEEP(*(.text.boot));
-        *(.text .text.*);
+        *(.text);
     }
+
+    /* user_entry (section .text.user) gets its own page-aligned output
+       section instead of matching the generic .text above (which, on
+       purpose, no longer globs .text.* -- it needs the PAGE_U bit set on
+       its mapping, and S-mode can never execute a PAGE_U page (see
+       Step 11's journal entry), so it must not share a page with any
+       code the kernel itself runs. */
+    . = ALIGN(4096);
+    __user_text_start = .;
+    .text.user : {
+        *(.text.user)
+    }
+    . = ALIGN(4096);
+    __user_text_end = .;
 
     .rodata : ALIGN(4) {
         *(.rodata .rodata.*);

@@ -8,8 +8,10 @@ typedef uint32_t size_t;
 
 // Provided by kernel.ld: where the kernel image starts, the bounds of the
 // zero-initialized data segment, the top of the stack region reserved
-// after it, and the range handed out by alloc_pages() below.
-extern char __kernel_base[], __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[];
+// after it, the page-aligned range holding just user_entry's own code,
+// and the range handed out by alloc_pages() below.
+extern char __kernel_base[], __bss[], __bss_end[], __stack_top[], __free_ram[],
+    __free_ram_end[], __user_text_start[], __user_text_end[];
 
 void *memset(void *buf, char c, size_t n) {
     uint8_t *p = (uint8_t *)buf;
@@ -188,7 +190,7 @@ void arm_timer(void) {
 #define PAGE_R (1 << 1)  // readable
 #define PAGE_W (1 << 2)  // writable
 #define PAGE_X (1 << 3)  // executable
-#define PAGE_U (1 << 4)  // user-mode accessible -- unused until user mode exists
+#define PAGE_U (1 << 4)  // user-mode accessible
 
 // Sv32 is a 2-level table: a 32-bit virtual address splits into a 10-bit
 // vpn1 (indexes the root table, itself exactly one page of 1024 4-byte
@@ -209,6 +211,12 @@ void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
     uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
     table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
 }
+
+// There's only one page table so far (no per-process address spaces
+// yet), built once in kernel_main -- global so user_launcher_entry()
+// (Step 11) can also call map_page() against it, to add PAGE_U to the
+// specific pages the U-mode program actually needs.
+uint32_t *kernel_page_table;
 
 #define SATP_SV32 (1u << 31)
 
@@ -248,14 +256,20 @@ struct trap_frame {
 };
 
 #define SCAUSE_SUPERVISOR_TIMER_INTERRUPT 0x80000005
+#define SCAUSE_ECALL_FROM_U_MODE 8
+
+// Our own syscall ABI -- not SBI's. `ecall` from U-mode traps straight to
+// this kernel (OpenSBI's medeleg delegates it), not to M-mode, so this is
+// an entirely separate convention from sbi_call()'s: syscall number in
+// a3, one argument in a0, chosen arbitrarily since nothing but our own
+// code on both ends has to agree on it.
+#define SYS_PUTCHAR 1
 
 // Defined later, once the thread pool exists -- forward-declared here so
 // handle_trap can call it on a timer interrupt.
 void yield(void);
 
 void handle_trap(struct trap_frame *f) {
-    (void)f;  // kernel_entry's own asm saves/restores f->sepc/f->sstatus
-              // around this call; nothing here needs to touch them directly
     uint32_t scause = READ_CSR(scause);
     uint32_t sepc = READ_CSR(sepc);
 
@@ -266,6 +280,26 @@ void handle_trap(struct trap_frame *f) {
         // thread again, at which point kernel_entry resumes exactly as
         // if nothing happened.
         yield();
+        return;
+    }
+
+    if (scause == SCAUSE_ECALL_FROM_U_MODE) {
+        switch (f->a3) {
+            case SYS_PUTCHAR:
+                putchar((char)f->a0);
+                break;
+            default:
+                printf("\nPANIC: unknown syscall %d\n", f->a3);
+                for (;;) {
+                    __asm__ __volatile__("wfi");
+                }
+        }
+        // ecall doesn't advance pc on its own -- skip over it ourselves,
+        // or we'd re-execute the same ecall forever. Written into the
+        // *frame*, not the live CSR: kernel_entry now restores sepc from
+        // here (see Step 10), so writing the CSR directly would just get
+        // overwritten again before sret.
+        f->sepc = sepc + 4;
         return;
     }
 
@@ -608,6 +642,83 @@ void thread_e_entry(void) {
     }
 }
 
+#define SSTATUS_SPP (1 << 8)   // trap-return privilege: 0 = U-mode, 1 = S-mode
+#define SSTATUS_SPIE (1 << 5)  // restored into SIE by sret -- without it,
+                                // this thread would run in U-mode with
+                                // interrupts permanently off, un-preemptible
+
+// A one-way trip from S-mode into U-mode at `entry`, running on
+// `user_sp`: write where `sret` should land (sepc) and which privilege
+// it should land at (sstatus.SPP, cleared here), then jump. Nothing
+// after `sret` in this function ever runs -- same shape as
+// thread_trampoline's jump into a brand-new thread, just crossing a
+// privilege boundary instead of just a function-call one.
+//
+// Safe to resume later via the ordinary preemption path (Step 10's fix)
+// now that sepc/sstatus are saved per-thread rather than read live off
+// the CPU -- before that fix, a thread resumed by some *other* thread's
+// trap would silently come back in the wrong privilege mode.
+__attribute__((naked)) __attribute__((noreturn))
+void enter_user_mode(uint32_t entry __attribute__((unused)),
+                      uint32_t user_sp __attribute__((unused))) {
+    __asm__ __volatile__(
+        "csrw sepc, a0\n"
+
+        "csrr t0, sstatus\n"
+        "li t1, %[spp]\n"
+        "not t1, t1\n"
+        "and t0, t0, t1\n"
+        "li t1, %[spie]\n"
+        "or t0, t0, t1\n"
+        "csrw sstatus, t0\n"
+
+        "mv sp, a1\n"
+        "sret\n"
+        :
+        : [spp] "i"(SSTATUS_SPP), [spie] "i"(SSTATUS_SPIE)
+    );
+}
+
+// The actual U-mode program: syscalls (not sbi_call() -- U-mode's ecall
+// traps to *this* kernel, not to OpenSBI, so it has to use our own
+// SYS_PUTCHAR convention) to print "U" forever. Written in raw asm, not
+// C, for the same reason thread_a/b/c/d loop forever rather than
+// returning: nothing has to decide yet what "a user program exits" means.
+__attribute__((naked)) __attribute__((section(".text.user")))
+void user_entry(void) {
+    __asm__ __volatile__(
+        "li a3, %[sys_putchar]\n"
+        "li a0, 'U'\n"
+        "1:\n"
+        "ecall\n"
+        "j 1b\n"
+        :
+        : [sys_putchar] "i"(SYS_PUTCHAR)
+    );
+}
+
+// Runs in S-mode, exactly like thread_a/b/c/d/e, right up until it hands
+// off to enter_user_mode() -- a separate stack for the U-mode program,
+// distinct from this thread's own kernel stack (thread_init already gave
+// it one; that stack is simply abandoned, mid-call, the moment
+// enter_user_mode's `mv sp, a1` points sp at this one instead).
+//
+// alloc_pages() hands back memory the main identity map in kernel_main
+// already covers, but *without* PAGE_U (kernel_main deliberately keeps
+// that off everything it maps, since S-mode can never execute a PAGE_U
+// page -- see Step 11's journal entry). A stack is data, not code, so
+// that restriction was never about execution here, just about who's
+// allowed to touch it at all: re-mapping just this range adds PAGE_U so
+// the U-mode program can actually use it as its own stack.
+void user_launcher_entry(void) {
+    paddr_t user_stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
+    for (paddr_t paddr = user_stack_bottom; paddr < user_stack_bottom + THREAD_STACK_SIZE;
+         paddr += PAGE_SIZE) {
+        map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_U);
+    }
+    enter_user_mode((uint32_t)user_entry, user_stack_bottom + THREAD_STACK_SIZE);
+}
+
 void kernel_main(void) {
     // The linker only reserves space for .bss; nothing has zeroed it yet.
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
@@ -619,11 +730,32 @@ void kernel_main(void) {
     // Mapping the *whole* free_ram range up front (not just what's
     // allocated so far) means later allocations -- like the thread stacks
     // below -- already have valid mappings by the time they're used.
-    uint32_t *kernel_page_table = (uint32_t *)alloc_pages(1);
+    //
+    // No PAGE_U here: this range is the kernel's own code, data, and
+    // every kernel thread's stack -- S-mode has to be able to *execute*
+    // it, and RISC-V flatly never permits an S-mode instruction fetch
+    // from a page with PAGE_U set, independent of sstatus.SUM (which
+    // only governs S-mode loads/stores). That's not a simplification to
+    // revisit later; it's the one restriction Sv32 enforces no matter
+    // what, and finding it out the hard way -- the whole kernel silently
+    // refusing to execute its own next instruction the moment PAGE_U was
+    // (wrongly) applied here too -- is this step's actual journal entry.
+    kernel_page_table = (uint32_t *)alloc_pages(1);
     for (paddr_t paddr = (paddr_t)__kernel_base; paddr < (paddr_t)__free_ram_end;
          paddr += PAGE_SIZE) {
         map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
     }
+
+    // user_entry's own page-aligned region (kernel.ld's .text.user) is
+    // the one place that *does* get PAGE_U, plus PAGE_X so U-mode can
+    // actually fetch from it -- isolated to its own page(s) specifically
+    // so this never shares a page with code the kernel itself needs to
+    // run.
+    for (paddr_t paddr = (paddr_t)__user_text_start; paddr < (paddr_t)__user_text_end;
+         paddr += PAGE_SIZE) {
+        map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_X | PAGE_U);
+    }
+
     enable_paging(kernel_page_table);
     printf("\n\npaging enabled, satp=%x\n", READ_CSR(satp));
 
@@ -648,6 +780,7 @@ void kernel_main(void) {
     thread_create(thread_c_entry);
     thread_create(thread_d_entry);
     thread_create(thread_e_entry);
+    thread_create(user_launcher_entry);
 
     // kernel_main is current_thread's placeholder (idle_thread) until
     // this first yield() hands off to whichever thread the scheduler
