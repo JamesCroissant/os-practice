@@ -461,3 +461,32 @@ way, since nothing stops `map_page()` from being called against the same
 table for anything. Per-process page tables are the next thing this
 design was always leaving for later, not a gap found by accident this
 time.
+
+## Step 12: `SYS_EXIT`
+
+Step 11's `user_entry` only ever looped forever -- there was no way for
+a U-mode program to actually finish. The same question already has an
+answer on the kernel-thread side: `thread_exit()` (Step 7), reached when
+a thread's entry function returns. A U-mode program has no C-level
+"return into the kernel" to hook, so it needs a syscall instead, but the
+destination is the same function: `SYS_EXIT`'s case in `handle_trap`
+just calls `thread_exit()` directly. `current_thread` is still whichever
+thread issued the `ecall` (nothing switches it before this point), so
+`thread_exit()` frees exactly that thread's slot and never returns, the
+same way it does when reached from `thread_trampoline`'s `call` after a
+kernel thread's own entry function returns.
+
+`user_entry` now prints `U` a fixed 5 times (mirroring `thread_d`'s
+pattern from Step 7 exactly) and then calls `SYS_EXIT`, instead of
+looping forever.
+
+**Verified**: 5-second capture, no panic. Serial output has exactly one
+contiguous run of 5 `U`s, same shape as `thread_d`'s 5 `D`s, never
+repeating afterward. `qemu -d int` shows exactly 6 `user_ecall` events
+total across the whole capture -- 5 at `epc=0x80201008`
+(`SYS_PUTCHAR`'s `ecall`) and exactly 1 at `epc=0x80201014`
+(`SYS_EXIT`'s, a different instruction address, confirming it's a
+genuinely separate call) -- and not one more after that, confirming the
+thread actually stopped rather than merely going quiet. `A`/`B`/`C`/`E`
+keep running correctly for the rest of the capture, same as every step
+since Step 7.

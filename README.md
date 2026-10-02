@@ -48,6 +48,10 @@ understandable — you can write and run them yourself in an afternoon.
   the kernel only through `ecall` (its own syscall convention, not
   SBI's) — preemptible and resumable like any other thread, now that
   `sepc`/`sstatus` are saved per-thread.
+- **`SYS_EXIT`**: a U-mode program can terminate itself through the same
+  `thread_exit()` a kernel thread's entry function returning into (Step
+  7) already uses — a syscall away rather than a plain C `return`, since
+  U-mode has no such thing as "returning into the kernel".
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
