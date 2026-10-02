@@ -264,10 +264,12 @@ struct trap_frame {
 // a3, one argument in a0, chosen arbitrarily since nothing but our own
 // code on both ends has to agree on it.
 #define SYS_PUTCHAR 1
+#define SYS_EXIT 2
 
 // Defined later, once the thread pool exists -- forward-declared here so
-// handle_trap can call it on a timer interrupt.
+// handle_trap can call them on a timer interrupt or a SYS_EXIT syscall.
 void yield(void);
+__attribute__((noreturn)) void thread_exit(void);
 
 void handle_trap(struct trap_frame *f) {
     uint32_t scause = READ_CSR(scause);
@@ -288,6 +290,13 @@ void handle_trap(struct trap_frame *f) {
             case SYS_PUTCHAR:
                 putchar((char)f->a0);
                 break;
+            case SYS_EXIT:
+                // Same destination as a kernel thread's entry function
+                // returning (Step 7) -- current_thread is still the
+                // U-mode program that just called this, so thread_exit()
+                // frees exactly its slot, then never comes back here.
+                thread_exit();
+                break;  // unreachable; thread_exit() never returns
             default:
                 printf("\nPANIC: unknown syscall %d\n", f->a3);
                 for (;;) {
@@ -474,10 +483,6 @@ __attribute__((naked)) void switch_context(uint32_t *prev_sp __attribute__((unus
         "ret\n"
     );
 }
-
-// Forward-declared so thread_trampoline can call it below -- defined
-// later, once current_thread and yield() exist.
-__attribute__((noreturn)) void thread_exit(void);
 
 // A thread switched to via a timer interrupt normally resumes through
 // kernel_entry's own `sret`, which is what re-enables interrupts
@@ -681,19 +686,24 @@ void enter_user_mode(uint32_t entry __attribute__((unused)),
 
 // The actual U-mode program: syscalls (not sbi_call() -- U-mode's ecall
 // traps to *this* kernel, not to OpenSBI, so it has to use our own
-// SYS_PUTCHAR convention) to print "U" forever. Written in raw asm, not
-// C, for the same reason thread_a/b/c/d loop forever rather than
-// returning: nothing has to decide yet what "a user program exits" means.
+// SYS_PUTCHAR/SYS_EXIT convention) to print "U" a fixed 5 times, then
+// exit -- same shape as thread_d (Step 7), just reached by SYS_EXIT
+// instead of a plain C `return`. Written in raw asm, not C, since
+// there's no C-level call for "do a syscall" to begin with.
 __attribute__((naked)) __attribute__((section(".text.user")))
 void user_entry(void) {
     __asm__ __volatile__(
         "li a3, %[sys_putchar]\n"
         "li a0, 'U'\n"
+        "li t0, 5\n"
         "1:\n"
         "ecall\n"
-        "j 1b\n"
+        "addi t0, t0, -1\n"
+        "bnez t0, 1b\n"
+        "li a3, %[sys_exit]\n"
+        "ecall\n"
         :
-        : [sys_putchar] "i"(SYS_PUTCHAR)
+        : [sys_putchar] "i"(SYS_PUTCHAR), [sys_exit] "i"(SYS_EXIT)
     );
 }
 
