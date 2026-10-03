@@ -559,7 +559,16 @@ struct thread *thread_create(void (*entry)(void)) {
 // next RUNNABLE one and switch to it. A thread never needs to know who
 // it's handing off to -- it just calls yield() and trusts the scheduler.
 void yield(void) {
-    int current_index = (int)(current_thread - threads);  // negative/out-of-range for idle_thread, which is fine: it's never a valid match below
+    // current_thread - threads is only well-defined pointer arithmetic
+    // when current_thread actually points into the threads[] array --
+    // idle_thread is a separate object entirely, so subtracting threads
+    // from it (as the very first call, from kernel_main, always does) is
+    // undefined behavior per the C standard, not just "a negative number
+    // that happens to work out." Comparing addresses instead of
+    // subtracting them is well-defined for any two pointers, so check
+    // for idle_thread explicitly rather than relying on whatever a
+    // UB pointer subtraction happens to produce today.
+    int current_index = (current_thread == &idle_thread) ? -1 : (int)(current_thread - threads);
 
     struct thread *next = NULL;
     for (int offset = 1; offset <= MAX_THREADS; offset++) {
