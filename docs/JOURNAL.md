@@ -534,3 +534,32 @@ shouldn't, since nothing was failing), just makes the one access this
 kernel actually depends on -- S-mode's own trap-frame push onto a
 U-mode thread's stack -- correct by the spec rather than correct by
 coincidence of which emulator happens to be running it.
+
+## Step 14: `current_thread - threads` (another review-found issue)
+
+Same kind of find as Step 13 -- not a crash, a second pass over
+`yield()` with Step 13's "correct by spec, not by luck" question in
+mind. `int current_index = (int)(current_thread - threads);` subtracts
+two pointers to compute where `current_thread` sits in the pool -- but
+the very first call, from `kernel_main`, has `current_thread ==
+&idle_thread`, a *separate* global, not an element of `threads[]`. The
+C standard only defines pointer subtraction between pointers into the
+same array (or one past its end); subtracting pointers to two unrelated
+objects is undefined behavior, not just "a negative number that happens
+to fall out of the math." The existing comment already knew the result
+needed to land out of range for the loop below to behave -- it just
+didn't notice that *getting* that value was itself the undefined part.
+
+Fix: compare addresses instead of subtracting them for the one case
+that isn't actually an array access -- `(current_thread == &idle_thread)
+? -1 : (int)(current_thread - threads)`. Pointer *comparison* between
+any two pointers is always well-defined, so this produces the exact
+same `-1` the old code relied on, by a route the standard actually
+permits, and the subtraction itself now only ever executes when
+`current_thread` genuinely does point into `threads[]`.
+
+**Verified**: no behavior to change (same value, different route to
+it), so verification is that nothing broke -- re-ran the full QEMU
+capture: no panic, `thread_d`/`user_entry` each still produce exactly
+one clean run of 5 characters, `A`/`B`/`C`/`E` keep interleaving
+correctly.

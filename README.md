@@ -56,6 +56,10 @@ understandable — you can write and run them yourself in an afternoon.
   enforcing it — S-mode needs it to read/write a `PAGE_U` page, which
   `kernel_entry`'s own trap-frame push does the moment a U-mode thread
   traps onto its own (`PAGE_U`-marked) stack.
+- **Well-defined scheduler bookkeeping**: `yield()` no longer subtracts
+  pointers to two unrelated objects (undefined behavior, even though it
+  happened to produce a usable value) to detect the one case — the very
+  first call — where `current_thread` isn't in the thread pool at all.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
