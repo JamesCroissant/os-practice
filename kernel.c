@@ -647,10 +647,12 @@ void thread_e_entry(void) {
     }
 }
 
-#define SSTATUS_SPP (1 << 8)   // trap-return privilege: 0 = U-mode, 1 = S-mode
-#define SSTATUS_SPIE (1 << 5)  // restored into SIE by sret -- without it,
-                                // this thread would run in U-mode with
-                                // interrupts permanently off, un-preemptible
+#define SSTATUS_SPP (1 << 8)    // trap-return privilege: 0 = U-mode, 1 = S-mode
+#define SSTATUS_SPIE (1 << 5)   // restored into SIE by sret -- without it,
+                                 // this thread would run in U-mode with
+                                 // interrupts permanently off, un-preemptible
+#define SSTATUS_SUM (1 << 18)   // permit S-mode loads/stores to PAGE_U pages --
+                                 // see kernel_main for why this has to be set
 
 // A one-way trip from S-mode into U-mode at `entry`, running on
 // `user_sp`: write where `sret` should land (sepc) and which privilege
@@ -716,10 +718,11 @@ void user_entry(void) {
 // alloc_pages() hands back memory the main identity map in kernel_main
 // already covers, but *without* PAGE_U (kernel_main deliberately keeps
 // that off everything it maps, since S-mode can never execute a PAGE_U
-// page -- see Step 11's journal entry). A stack is data, not code, so
-// that restriction was never about execution here, just about who's
-// allowed to touch it at all: re-mapping just this range adds PAGE_U so
-// the U-mode program can actually use it as its own stack.
+// page -- see Step 11's journal entry): re-mapping just this range adds
+// PAGE_U so the U-mode program can actually use it as its own stack.
+// S-mode still needs to read/write this same stack too, the moment a
+// trap lands kernel_entry's frame on it -- that needs sstatus.SUM set
+// (Step 13), not just PAGE_U on the mapping.
 void user_launcher_entry(void) {
     paddr_t user_stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
     for (paddr_t paddr = user_stack_bottom; paddr < user_stack_bottom + THREAD_STACK_SIZE;
@@ -778,6 +781,18 @@ void kernel_main(void) {
     // forever.
     WRITE_CSR(sie, READ_CSR(sie) | (1 << 5));
     WRITE_CSR(sstatus, READ_CSR(sstatus) | (1 << 1));
+
+    // SSTATUS_SUM, separately: per the RISC-V privileged spec, S-mode
+    // loads/stores to a PAGE_U page fault unless this is set -- and
+    // kernel_entry's own trap-frame push does exactly that the moment a
+    // U-mode thread (Step 11) traps, since sp at that point is the
+    // user_launcher_entry-allocated, PAGE_U-marked user stack, not a
+    // kernel one (there's no sscratch-based kernel-stack switch yet, a
+    // gap Step 11's journal already calls out). QEMU happens not to
+    // enforce this, which is how it went unnoticed until checking
+    // sstatus directly turned up SUM reading back as 0 -- worth setting
+    // correctly regardless of what one emulator currently lets slide.
+    WRITE_CSR(sstatus, READ_CSR(sstatus) | SSTATUS_SUM);
     arm_timer();
 
     printf("\n\nHello World!\n");
