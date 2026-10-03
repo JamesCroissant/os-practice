@@ -52,6 +52,10 @@ understandable — you can write and run them yourself in an afternoon.
   `thread_exit()` a kernel thread's entry function returning into (Step
   7) already uses — a syscall away rather than a plain C `return`, since
   U-mode has no such thing as "returning into the kernel".
+- **`sstatus.SUM`**: set correctly, rather than relying on QEMU not
+  enforcing it — S-mode needs it to read/write a `PAGE_U` page, which
+  `kernel_entry`'s own trap-frame push does the moment a U-mode thread
+  traps onto its own (`PAGE_U`-marked) stack.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/

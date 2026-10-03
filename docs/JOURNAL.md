@@ -490,3 +490,47 @@ genuinely separate call) -- and not one more after that, confirming the
 thread actually stopped rather than merely going quiet. `A`/`B`/`C`/`E`
 keep running correctly for the rest of the capture, same as every step
 since Step 7.
+
+## Step 13: `sstatus.SUM` (found reviewing Step 11/12, not by a visible failure)
+
+Nothing was broken when this step started -- it came from re-reading
+Step 11's own reasoning rather than from a crash. That comment claimed
+`PAGE_U` only ever restricts *execution* in S-mode, never load/store,
+since only `PAGE_X` governs that. True for U-mode, false for S-mode: the
+RISC-V privileged spec also gates S-mode *loads and stores* to a
+`PAGE_U` page behind `sstatus.SUM` ("permit Supervisor User Memory
+access") -- SUM=0 means those accesses fault too, not just execution.
+
+That should matter a lot here: `kernel_entry`'s very first instructions
+on any trap push the 32-word frame onto whatever `sp` currently is, and
+for a U-mode thread that's the `PAGE_U`-marked user stack `user_launcher_entry`
+mapped (Step 11) -- no sscratch-based kernel-stack switch exists yet, a
+gap already called out in that step's journal entry. Checking
+`sstatus` directly after `enable_paging()` showed `SUM` reading back
+`0` -- never set anywhere in this kernel -- and yet Step 11 and Step
+12's own verification both passed repeatedly, with the trap frame
+pushed and popped from that exact stack dozens of times. QEMU's RV32
+model simply isn't enforcing the SUM check here, at least not in this
+configuration.
+
+Not something to leave relying on an emulator's leniency: fixed by
+setting `sstatus.SUM` once in `kernel_main`, alongside the existing
+`SIE` setup, before any thread (kernel or user) ever runs.
+`enter_user_mode`'s clear/set of `SPP`/`SPIE` only ever touches those
+two bits (`and`/`or` against a mask, not a wholesale overwrite), so
+`SUM` -- set once, globally, before it matters -- survives into every
+thread's own saved `sstatus` through Step 10's per-thread save/restore
+untouched, including a thread that's currently running in U-mode.
+
+**Verified**: a temporary debug print showed `sstatus` reading back
+`0x80006000` (bit 18 clear) right after `enable_paging()`, before the
+fix; `0x80046002` (bit 18 set) right after the new `WRITE_CSR`, after
+it -- confirming the write actually lands, not just that the code
+compiles. Re-ran the full Step 12 verification afterward: no panic,
+`thread_d` and `user_entry` each still produce exactly one clean run of
+5 characters (`DDDDD`, `UUUUU`), and `A`/`B`/`C`/`E` keep interleaving
+correctly -- confirming the fix changes nothing observable (as it
+shouldn't, since nothing was failing), just makes the one access this
+kernel actually depends on -- S-mode's own trap-frame push onto a
+U-mode thread's stack -- correct by the spec rather than correct by
+coincidence of which emulator happens to be running it.
