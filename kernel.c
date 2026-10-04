@@ -90,7 +90,13 @@ void printf(const char *fmt, ...) {
                 unsigned magnitude = (unsigned)value;
                 if (value < 0) {
                     putchar('-');
-                    magnitude = (unsigned)(-value);
+                    // Not `(unsigned)(-value)`: negating INT_MIN is
+                    // signed overflow, undefined behavior, since
+                    // -INT_MIN doesn't fit in an int. 0u - (unsigned)value
+                    // gets the same magnitude through unsigned
+                    // arithmetic alone, which wraps modularly by
+                    // definition rather than overflowing.
+                    magnitude = 0u - (unsigned)value;
                 }
                 unsigned divisor = 1;
                 while (magnitude / divisor > 9)
@@ -806,6 +812,10 @@ void kernel_main(void) {
 
     printf("\n\nHello World!\n");
     printf("1 + 2 = %d, 0x%x\n", 1 + 2, 0x1234abcd);
+    // -2147483647 - 1, not a literal -2147483648, since that would first
+    // parse as unary-minus applied to 2147483648 -- itself already too
+    // big for a 32-bit int. Exercises the INT_MIN fix above directly.
+    printf("INT_MIN = %d\n", -2147483647 - 1);
 
     // Three threads, not two -- proving the scheduler actually decides
     // who runs next instead of two threads just hardcoding each other.
