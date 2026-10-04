@@ -563,3 +563,30 @@ it), so verification is that nothing broke -- re-ran the full QEMU
 capture: no panic, `thread_d`/`user_entry` each still produce exactly
 one clean run of 5 characters, `A`/`B`/`C`/`E` keep interleaving
 correctly.
+
+## Step 15: `printf`'s `%d` and `INT_MIN` (a third review-found issue)
+
+A third pass, same question as Steps 13-14: is this correct by the
+language's rules, or correct by luck? `printf`'s `%d` case negates a
+negative `value` to get its magnitude: `magnitude = (unsigned)(-value);`.
+For `value == INT_MIN`, `-value` is signed overflow -- `INT_MIN`'s
+magnitude (2147483648) doesn't fit in an `int`, and `int` has no
+"wrap around" defined for overflow the way unsigned types do. No
+caller in this kernel happens to pass `INT_MIN` today, so nothing was
+visibly broken; it's a latent bug in a function every future `printf`
+call trusts.
+
+Fix: skip the signed negation entirely. `0u - (unsigned)value` gets the
+exact same magnitude through unsigned arithmetic alone -- converting a
+negative `int` to `unsigned` and subtracting are both modular
+operations the standard defines completely, for every possible `int`
+value including `INT_MIN`, unlike negating a signed `int`.
+
+**Verified**: added a one-off `printf("INT_MIN = %d\n", -2147483647 - 1)`
+call (written that way, not as a literal `-2147483648`, since that
+token would first parse as negating `2147483648` -- already too big
+for an `int` before the fix even applies) right after the existing
+`1 + 2 = ...` sanity line. Output: `INT_MIN = -2147483648`, exactly
+correct, no panic. Re-ran the full capture afterward: `thread_d`/
+`user_entry` still each produce exactly one clean run of 5 characters,
+`A`/`B`/`C`/`E` keep interleaving correctly.

@@ -60,6 +60,10 @@ understandable — you can write and run them yourself in an afternoon.
   pointers to two unrelated objects (undefined behavior, even though it
   happened to produce a usable value) to detect the one case — the very
   first call — where `current_thread` isn't in the thread pool at all.
+- **`printf`'s `%d` and `INT_MIN`**: fixed a signed-overflow bug (negating
+  `INT_MIN` doesn't fit in an `int`) that no current caller happened to
+  trigger, by computing the magnitude through unsigned arithmetic
+  instead of negation.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
