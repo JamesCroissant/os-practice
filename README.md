@@ -64,6 +64,10 @@ understandable — you can write and run them yourself in an afternoon.
   `INT_MIN` doesn't fit in an `int`) that no current caller happened to
   trigger, by computing the magnitude through unsigned arithmetic
   instead of negation.
+- **16-byte stack alignment at boot**: `__stack_top` — loaded straight
+  into `sp` before `kernel_main` ever runs — is now actually aligned to
+  the 16 bytes the RISC-V calling convention requires at function entry,
+  not just 4.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/

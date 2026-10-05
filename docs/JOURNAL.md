@@ -590,3 +590,35 @@ for an `int` before the fix even applies) right after the existing
 correct, no panic. Re-ran the full capture afterward: `thread_d`/
 `user_entry` still each produce exactly one clean run of 5 characters,
 `A`/`B`/`C`/`E` keep interleaving correctly.
+
+## Step 16: `__stack_top` wasn't 16-byte aligned (a fourth review-found issue)
+
+A fourth pass, this time over `kernel.ld` rather than `kernel.c`. The
+RISC-V calling convention requires `sp` to be 16-byte aligned at
+function entry -- not just word-aligned -- and `boot()` loads
+`__stack_top` straight into `sp` before jumping into `kernel_main`, a
+perfectly ordinary (non-naked) C function. `kernel.ld` computed
+`__stack_top` as `ALIGN(4)` plus a 128KB reservation. 128KB is itself a
+multiple of 16, so it preserves whatever alignment the *base* already
+had -- and that base is only guaranteed 4-byte aligned, which leaves
+`__stack_top`'s alignment mod 16 basically up to how big `.bss` happens
+to be on any given build.
+
+`readelf -s` on the actual build confirmed it: `__stack_top` =
+`0x8022241c`, which is `12 mod 16`, not `0`. Every kernel thread's own
+stack top (from `thread_init`, built on `alloc_pages()`'s page-aligned
+output) was already correctly 16-aligned -- this was specifically the
+one-time boot stack that wasn't, and it's used exactly once, for
+exactly one function entry (`kernel_main`), which is exactly why it
+went unnoticed: nothing in this kernel allocates large aligned stack
+objects or uses atomics/SIMD that would actually break visibly on a
+4-byte-off stack.
+
+Fix: align the *base* to 16 instead of 4 before reserving the 128KB,
+so adding a multiple of 16 can't un-fix what alignment already held.
+
+**Verified**: `readelf -s` after the fix: `__stack_top` =
+`0x80222420` -- `0 mod 16`. Re-ran the full capture: no panic,
+`INT_MIN = -2147483648` still prints correctly, `thread_d`/`user_entry`
+each still produce exactly one clean run of 5 characters, `A`/`B`/`C`/`E`
+keep interleaving correctly.
