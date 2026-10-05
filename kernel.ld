@@ -38,7 +38,13 @@ SECTIONS {
         __bss_end = .;
     }
 
-    . = ALIGN(4);
+    /* ALIGN(16), not ALIGN(4): boot() loads this straight into sp before
+       jumping to kernel_main, and the RISC-V calling convention requires
+       sp to be 16-byte aligned at function entry, not just 4-byte --
+       128KB (a multiple of 16) preserves whatever alignment this starts
+       at, so getting __stack_top itself 16-aligned depends on aligning
+       the *base* to 16, not 4. */
+    . = ALIGN(16);
     . += 128 * 1024; /* 128KB kernel stack */
     __stack_top = .;
 
