@@ -233,7 +233,14 @@ uint32_t *kernel_page_table;
 // stop trusting that cache.
 void enable_paging(uint32_t *table1) {
     WRITE_CSR(satp, SATP_SV32 | ((uint32_t)table1 / PAGE_SIZE));
-    __asm__ __volatile__("sfence.vma");
+    // "memory" here isn't decoration: sfence.vma's entire job is a fence
+    // on memory translation, so the compiler has to be told not to
+    // reorder, hoist, or cache memory accesses across it -- without this
+    // clobber, nothing stops it from treating this asm as a no-op with
+    // respect to memory and reordering real loads/stores around it,
+    // which would defeat the fence (especially if this small a function
+    // ever gets inlined into its caller).
+    __asm__ __volatile__("sfence.vma" ::: "memory");
 }
 
 // A CPU normally just keeps executing the next instruction, but on a
