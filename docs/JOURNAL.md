@@ -622,3 +622,32 @@ so adding a multiple of 16 can't un-fix what alignment already held.
 `INT_MIN = -2147483648` still prints correctly, `thread_d`/`user_entry`
 each still produce exactly one clean run of 5 characters, `A`/`B`/`C`/`E`
 keep interleaving correctly.
+
+## Step 17: `sfence.vma` was missing a `memory` clobber (a fifth review-found issue)
+
+A fifth pass, this time over `enable_paging()`. `sfence.vma`'s entire
+purpose is a fence on memory translation -- it exists specifically to
+tell the CPU "stop trusting cached translations (or their absence) from
+before this point." The inline asm wrapping it,
+`__asm__ __volatile__("sfence.vma");`, had no clobber list at all, which
+means *the compiler* was never told the equivalent thing: nothing stopped
+it from treating this asm as having no effect on memory and reordering,
+hoisting, or caching real loads/stores across it, which is exactly the
+kind of reordering the fence exists to prevent. `enable_paging()` is a
+small, ordinary (non-naked) C function, which -O2 is free to inline into
+`kernel_main` -- at which point whatever memory operations surround the
+call site are fair game for the optimizer to shuffle across this asm
+unless it's told not to.
+
+Fix: add `"memory"` to the clobber list -- `"sfence.vma" ::: "memory"` --
+so the compiler treats it as an opaque barrier on memory accesses, the
+same way `sbi_call()`'s `ecall` already does (it has `"memory"` in its
+own clobber list, which is exactly why that one was never a candidate
+for this kind of issue).
+
+**Verified**: no behavior to change by design (the fence's actual runtime
+effect is unchanged; only what the *compiler* is allowed to assume around
+it changes), so verification is that nothing broke: no panic,
+`paging enabled, satp=80080223` and `INT_MIN = -2147483648` both still
+print correctly, `thread_d`/`user_entry` each still produce exactly one
+clean run of 5 characters, `A`/`B`/`C`/`E` keep interleaving correctly.

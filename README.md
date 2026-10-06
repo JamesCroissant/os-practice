@@ -68,6 +68,10 @@ understandable — you can write and run them yourself in an afternoon.
   into `sp` before `kernel_main` ever runs — is now actually aligned to
   the 16 bytes the RISC-V calling convention requires at function entry,
   not just 4.
+- **`sfence.vma` as a real compiler barrier**: it now carries a `memory`
+  clobber, so the one instruction whose whole job is a memory-translation
+  fence can't be treated by the optimizer as having no effect on memory
+  at all.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
