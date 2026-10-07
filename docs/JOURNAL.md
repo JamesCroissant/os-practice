@@ -651,3 +651,40 @@ it changes), so verification is that nothing broke: no panic,
 `paging enabled, satp=80080223` and `INT_MIN = -2147483648` both still
 print correctly, `thread_d`/`user_entry` each still produce exactly one
 clean run of 5 characters, `A`/`B`/`C`/`E` keep interleaving correctly.
+
+## Step 18: `READ_CSR`/`WRITE_CSR` were missing the same `memory` clobber
+
+Step 17 fixed one specific instance of a missing `memory` clobber;
+this is the same finding generalized to where it actually lives. Every
+`csrr`/`csrw` in this kernel -- `sie`, `sstatus`, `sepc`, `scause`,
+`satp`, `stvec`, `time`, `timeh` -- goes through the `READ_CSR`/
+`WRITE_CSR` macros, and neither had a `memory` clobber either. Exactly
+the same risk Step 17 described: nothing stops the compiler from
+treating a `csrr`/`csrw` as having no effect on memory and reordering
+ordinary loads/stores across it, which matters most for exactly the
+case Step 17 called out -- a small function built around one of these
+macros (like `enable_paging()`) getting inlined into its caller.
+
+Before committing to this as "the" fix for the day, checked whether it
+was just a theoretical nicety: added the clobber, rebuilt, and diffed
+`objdump -d` output for `kernel_main`, `handle_trap`, `enable_paging`,
+`arm_timer`, `read_time`, and `thread_create` against the unpatched
+build. Identical in every case -- for this specific, small codebase,
+GCC already wasn't reordering across these calls (the same turned out
+to be true re-checking Step 17's own `sfence.vma` fix: identical
+`enable_paging` disassembly with or without that clobber too). Not
+proof the gap is harmless in general, only that neither fix changes
+today's generated code -- which is exactly the same category Step 13
+(`sstatus.SUM`), 14 (pointer UB), and 15 (`printf`'s `INT_MIN`) already
+fall into: correct by the rules, not currently exploited by this
+specific compiler and this specific code, which is precisely why fixing
+it now instead of waiting for it to actually misbehave is the point.
+
+Fix: add `"memory"` to both macros' clobber lists, same pattern as
+Step 17.
+
+**Verified**: 5-second QEMU capture, no panic, `paging enabled,
+satp=80080223` and `INT_MIN = -2147483648` both print correctly,
+`thread_d`/`user_entry` each still produce exactly one clean run of 5
+characters, `A`/`B`/`C`/`E` keep interleaving correctly -- identical
+behavior to before, as expected.

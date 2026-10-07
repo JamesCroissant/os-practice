@@ -72,6 +72,10 @@ understandable — you can write and run them yourself in an afternoon.
   clobber, so the one instruction whose whole job is a memory-translation
   fence can't be treated by the optimizer as having no effect on memory
   at all.
+- **`READ_CSR`/`WRITE_CSR` as real compiler barriers too**: every
+  `csrr`/`csrw` in this kernel now carries the same `memory` clobber, for
+  the same reason — nothing else stops the optimizer from treating a
+  write to `satp`, `sstatus`, or `stvec` as having no effect on memory.
 
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
