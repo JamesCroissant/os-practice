@@ -10,12 +10,13 @@ CFLAGS = -std=c11 -O2 -g3 -Wall -Wextra \
          -Wl,--build-id=none
 
 SRCS = kernel.c
+HDRS = kernel.h
 
 .PHONY: all run clean
 
 all: kernel.elf
 
-kernel.elf: $(SRCS) kernel.ld
+kernel.elf: $(SRCS) $(HDRS) kernel.ld
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
 
 run: kernel.elf

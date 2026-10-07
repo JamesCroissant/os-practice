@@ -1,17 +1,4 @@
-#include <stdarg.h>
-#include <stddef.h>  // NULL only -- freestanding-safe, no libc functions
-
-typedef unsigned char uint8_t;
-typedef unsigned int uint32_t;
-typedef unsigned long long uint64_t;
-typedef uint32_t size_t;
-
-// Provided by kernel.ld: where the kernel image starts, the bounds of the
-// zero-initialized data segment, the top of the stack region reserved
-// after it, the page-aligned range holding just user_entry's own code,
-// and the range handed out by alloc_pages() below.
-extern char __kernel_base[], __bss[], __bss_end[], __stack_top[], __free_ram[],
-    __free_ram_end[], __user_text_start[], __user_text_end[];
+#include "kernel.h"
 
 void *memset(void *buf, char c, size_t n) {
     uint8_t *p = (uint8_t *)buf;
@@ -25,11 +12,6 @@ void *memset(void *buf, char c, size_t n) {
 // extension ID in a7, the function ID in a6, arguments in a0-a5, and
 // execute `ecall`. Firmware handles it and returns with a0/a1 holding
 // the result.
-struct sbiret {
-    long error;
-    long value;
-};
-
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
                         long arg5, long fid, long eid) {
     register long a0 __asm__("a0") = arg0;
@@ -121,14 +103,6 @@ end:
     va_end(vararg);
 }
 
-#define PAGE_SIZE 4096
-
-// A physical address -- worth its own name starting now, even though
-// it's just a uint32_t today, so that the distinction from an ordinary
-// pointer (a distinction that starts to matter the moment virtual memory
-// exists) isn't something to retrofit later.
-typedef uint32_t paddr_t;
-
 // A bump allocator: hands out the next `n` pages and never frees, so it
 // needs no free-list. Nothing in this kernel has a lifetime shorter than
 // "forever" yet -- thread_exit() frees a *thread slot* for reuse, not the
@@ -152,31 +126,11 @@ paddr_t alloc_pages(uint32_t n) {
     return addr;
 }
 
-// Both carry a "memory" clobber for the same reason Step 17's sfence.vma
-// fix did: csrr/csrw touch machine state (sie, sstatus, satp, stvec, ...)
-// that memory accesses can depend on in ways the compiler has no other
-// way to know about, so without it, nothing stops the optimizer from
-// treating these as pure, memory-independent operations and reordering
-// ordinary loads/stores across them -- especially once one of these
-// macros is used inside a small function the compiler is free to inline
-// into its caller, exactly the scenario that motivated Step 17.
-#define READ_CSR(reg)                                                   \
-    ({                                                                  \
-        unsigned long __tmp;                                            \
-        __asm__ __volatile__("csrr %0, " #reg : "=r"(__tmp) :: "memory"); \
-        __tmp;                                                          \
-    })
-
-#define WRITE_CSR(reg, value) \
-    __asm__ __volatile__("csrw " #reg ", %0" :: "r"(value) : "memory")
-
 // Timer interrupts: the SBI legacy "Set Timer" extension (EID 0) arms a
 // one-shot interrupt for an absolute `time` value; OpenSBI delivers it as
 // a supervisor timer interrupt (scause 0x80000005) once the clock reaches
 // that value. There's no periodic mode -- each interrupt has to re-arm
 // the next one itself, which handle_trap does below.
-#define TIMER_INTERVAL 1000000  // ~0.1s, going by this machine's reported 10MHz mtimer
-
 uint64_t read_time(void) {
     // RV32 has no single 64-bit read of `time`; reading the 32-bit low
     // and high halves separately risks catching a rollover between the
@@ -201,12 +155,7 @@ void arm_timer(void) {
 // process) -- Sv32 (RV32's page table format) is what makes "the same
 // virtual address means something different depending on who's running"
 // possible at all, and it has to exist before user mode can, not after.
-#define PAGE_V (1 << 0)  // valid
-#define PAGE_R (1 << 1)  // readable
-#define PAGE_W (1 << 2)  // writable
-#define PAGE_X (1 << 3)  // executable
-#define PAGE_U (1 << 4)  // user-mode accessible
-
+//
 // Sv32 is a 2-level table: a 32-bit virtual address splits into a 10-bit
 // vpn1 (indexes the root table, itself exactly one page of 1024 4-byte
 // PTEs), a 10-bit vpn0 (indexes a second-level table the root's PTE
@@ -232,8 +181,6 @@ void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
 // (Step 11) can also call map_page() against it, to add PAGE_U to the
 // specific pages the U-mode program actually needs.
 uint32_t *kernel_page_table;
-
-#define SATP_SV32 (1u << 31)
 
 // Turns on Sv32 translation: satp holds the mode bit plus the root
 // table's physical page number. sfence.vma afterward is required, not
@@ -269,30 +216,6 @@ void enable_paging(uint32_t *table1) {
 // preserve them, and yield() can resume a *different* thread than the one
 // that just trapped, on a stack that's been sitting there since some
 // earlier, unrelated trap.
-struct trap_frame {
-    uint32_t ra, gp, tp, t0, t1, t2, s0, s1;
-    uint32_t a0, a1, a2, a3, a4, a5, a6, a7;
-    uint32_t s2, s3, s4, s5, s6, s7, s8, s9, s10, s11;
-    uint32_t t3, t4, t5, t6;
-    uint32_t sepc, sstatus;
-};
-
-#define SCAUSE_SUPERVISOR_TIMER_INTERRUPT 0x80000005
-#define SCAUSE_ECALL_FROM_U_MODE 8
-
-// Our own syscall ABI -- not SBI's. `ecall` from U-mode traps straight to
-// this kernel (OpenSBI's medeleg delegates it), not to M-mode, so this is
-// an entirely separate convention from sbi_call()'s: syscall number in
-// a3, one argument in a0, chosen arbitrarily since nothing but our own
-// code on both ends has to agree on it.
-#define SYS_PUTCHAR 1
-#define SYS_EXIT 2
-
-// Defined later, once the thread pool exists -- forward-declared here so
-// handle_trap can call them on a timer interrupt or a SYS_EXIT syscall.
-void yield(void);
-__attribute__((noreturn)) void thread_exit(void);
-
 void handle_trap(struct trap_frame *f) {
     uint32_t scause = READ_CSR(scause);
     uint32_t sepc = READ_CSR(sepc);
@@ -446,18 +369,7 @@ void kernel_entry(void) {
 // is required to preserve across a call) -- caller-saved registers and
 // globals need no help, since the caller already protects its own and
 // code/globals are shared between threads anyway.
-#define THREAD_STACK_SIZE 8192
-
-enum thread_state {
-    THREAD_UNUSED,
-    THREAD_RUNNABLE,
-};
-
-struct thread {
-    uint32_t sp;
-    enum thread_state state;
-};
-
+//
 // Pushes the 13 callee-saved words onto the current stack, records where
 // they ended up (*prev_sp), then does the reverse for the incoming
 // thread: loads its saved sp, pops its 13 words back into the same
@@ -552,8 +464,6 @@ void thread_init(struct thread *th, void (*entry)(void)) {
 // hardcoded by name. That stops working the moment there's a third
 // thread -- with N threads, *something* has to decide who runs next.
 // That something is the scheduler below.
-#define MAX_THREADS 8
-
 struct thread threads[MAX_THREADS];
 
 // Represents kernel_main's own execution while it's not running any of
@@ -677,13 +587,6 @@ void thread_e_entry(void) {
         printf("E");
     }
 }
-
-#define SSTATUS_SPP (1 << 8)    // trap-return privilege: 0 = U-mode, 1 = S-mode
-#define SSTATUS_SPIE (1 << 5)   // restored into SIE by sret -- without it,
-                                 // this thread would run in U-mode with
-                                 // interrupts permanently off, un-preemptible
-#define SSTATUS_SUM (1 << 18)   // permit S-mode loads/stores to PAGE_U pages --
-                                 // see kernel_main for why this has to be set
 
 // A one-way trip from S-mode into U-mode at `entry`, running on
 // `user_sp`: write where `sret` should land (sepc) and which privilege
