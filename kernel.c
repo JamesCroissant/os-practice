@@ -152,14 +152,23 @@ paddr_t alloc_pages(uint32_t n) {
     return addr;
 }
 
-#define READ_CSR(reg)                                             \
-    ({                                                            \
-        unsigned long __tmp;                                      \
-        __asm__ __volatile__("csrr %0, " #reg : "=r"(__tmp));     \
-        __tmp;                                                    \
+// Both carry a "memory" clobber for the same reason Step 17's sfence.vma
+// fix did: csrr/csrw touch machine state (sie, sstatus, satp, stvec, ...)
+// that memory accesses can depend on in ways the compiler has no other
+// way to know about, so without it, nothing stops the optimizer from
+// treating these as pure, memory-independent operations and reordering
+// ordinary loads/stores across them -- especially once one of these
+// macros is used inside a small function the compiler is free to inline
+// into its caller, exactly the scenario that motivated Step 17.
+#define READ_CSR(reg)                                                   \
+    ({                                                                  \
+        unsigned long __tmp;                                            \
+        __asm__ __volatile__("csrr %0, " #reg : "=r"(__tmp) :: "memory"); \
+        __tmp;                                                          \
     })
 
-#define WRITE_CSR(reg, value) __asm__ __volatile__("csrw " #reg ", %0" ::"r"(value))
+#define WRITE_CSR(reg, value) \
+    __asm__ __volatile__("csrw " #reg ", %0" :: "r"(value) : "memory")
 
 // Timer interrupts: the SBI legacy "Set Timer" extension (EID 0) arms a
 // one-shot interrupt for an absolute `time` value; OpenSBI delivers it as
