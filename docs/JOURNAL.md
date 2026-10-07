@@ -688,3 +688,36 @@ satp=80080223` and `INT_MIN = -2147483648` both print correctly,
 `thread_d`/`user_entry` each still produce exactly one clean run of 5
 characters, `A`/`B`/`C`/`E` keep interleaving correctly -- identical
 behavior to before, as expected.
+
+## Step 19: split `kernel.c` into `kernel.h` + `kernel.c`
+
+Eighteen steps of incremental additions had left every type, macro,
+struct, and function in one ~870-line file -- not a bug, but by now a
+real readability cost: seeing "the shape of the kernel" meant scrolling
+the whole thing. Asked whether this project could draw on its own
+reference material for a refactor, the obvious first place to check was
+[*Operating System in 1,000 Lines*](https://github.com/nuta/operating-system-in-1000-lines)
+itself (already cited in README.md) -- its finished form doesn't stay
+one file either: it splits into `kernel.h`/`kernel.c`, `common.h`/
+`common.c` (code shared between kernel and user space), and `user.h`/
+`user.c`. This kernel's `user_entry` is a tiny naked-asm blob with no C
+code of its own, so there's nothing yet that would make a `common.*`
+split meaningful -- but the `kernel.h`/`kernel.c` split, separating
+*what exists* from *how it works*, applies directly and immediately.
+
+Mechanical, not a design change: every type, `#define`, `struct`, and
+function prototype moved into `kernel.h`; `kernel.c` keeps only
+implementations (and the comments explaining *why*, which stay next to
+the code they explain rather than getting duplicated into the header).
+`Makefile` gained `kernel.h` as an explicit dependency so editing it
+triggers a rebuild.
+
+**Verified**, more rigorously than "it still boots": built both the
+pre-refactor and post-refactor trees, then compared `.text`,
+`.text.user`, `.rodata`, and `.data` byte-for-byte via
+`objcopy -O binary --only-section=... | md5sum` -- identical in all
+four, not just "close." That's stronger than a behavioral QEMU
+re-test, but ran the full one anyway: no panic, `paging enabled,
+satp=80080223` and `INT_MIN = -2147483648` both print correctly,
+`thread_d`/`user_entry` each still produce exactly one clean run of 5
+characters, `A`/`B`/`C`/`E` keep interleaving correctly.

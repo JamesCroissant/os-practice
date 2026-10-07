@@ -77,6 +77,16 @@ understandable — you can write and run them yourself in an afternoon.
   the same reason — nothing else stops the optimizer from treating a
   write to `satp`, `sstatus`, or `stvec` as having no effect on memory.
 
+## Source layout
+
+`kernel.h` declares everything (types, macros, struct layouts, function
+prototypes); `kernel.c` implements it, following the split used by
+[*Operating System in 1,000 Lines*](https://github.com/nuta/operating-system-in-1000-lines)
+itself (its own `kernel.h`/`kernel.c`, alongside `common.*` and `user.*`
+for the pieces this project doesn't need a separate file for yet). The
+"why" behind each piece stays as a comment in `kernel.c`, next to the
+code it explains, not duplicated into the header.
+
 See [`docs/JOURNAL.md`](docs/JOURNAL.md) for what each step does and why,
 including two real bugs hit and fixed while building this (a PIE/
 build-id linking issue that made QEMU jump into non-code bytes, and an
