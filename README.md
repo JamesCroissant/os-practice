@@ -76,6 +76,9 @@ understandable — you can write and run them yourself in an afternoon.
   `csrr`/`csrw` in this kernel now carries the same `memory` clobber, for
   the same reason — nothing else stops the optimizer from treating a
   write to `satp`, `sstatus`, or `stvec` as having no effect on memory.
+- **`kernel.h` include guard**: inert today (one translation unit
+  includes it), but a standard `#ifndef`/`#define`/`#endif` guard either
+  way, closing a gap Step 19's split left open.
 
 ## Source layout
 

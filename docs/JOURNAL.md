@@ -721,3 +721,25 @@ re-test, but ran the full one anyway: no panic, `paging enabled,
 satp=80080223` and `INT_MIN = -2147483648` both print correctly,
 `thread_d`/`user_entry` each still produce exactly one clean run of 5
 characters, `A`/`B`/`C`/`E` keep interleaving correctly.
+
+## Step 20: `kernel.h` had no include guard
+
+A small gap left over from splitting the header out in Step 19: nothing
+stopped `kernel.h` from being included twice (or, had a future split
+added a second file including it, redefining every type, macro, and
+struct in it) -- there was no `#ifndef`/`#define`/`#endif` guard at
+all. With only `kernel.c` including it, this has zero effect today; it
+matters the moment a second translation unit (the `common.c`/`user.c`
+split this project's reference project uses, and that Step 19's own
+journal entry noted this kernel doesn't need yet) ever includes it
+too.
+
+Fix: wrapped the whole header in a standard `#ifndef KERNEL_H` /
+`#define KERNEL_H` / `#endif` guard.
+
+**Verified**: no behavior to change (today's build has exactly one
+translation unit, so the guard is inert either way) -- rebuilt and ran
+the same QEMU capture: no panic, `paging enabled, satp=80080223` and
+`INT_MIN = -2147483648` both print correctly, `thread_d`/`user_entry`
+each still produce exactly one clean run of 5 characters, `A`/`B`/`C`/`E`
+keep interleaving correctly.
