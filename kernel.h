@@ -7,6 +7,9 @@
 // shape. The "why" behind each piece stays in kernel.c, next to its
 // implementation, not duplicated here.
 
+#ifndef KERNEL_H
+#define KERNEL_H
+
 #include <stdarg.h>
 #include <stddef.h>  // NULL only -- freestanding-safe, no libc functions
 
@@ -141,3 +144,5 @@ void user_launcher_entry(void);
 
 void kernel_main(void);
 void boot(void);
+
+#endif  // KERNEL_H
