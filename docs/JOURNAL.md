@@ -743,3 +743,28 @@ the same QEMU capture: no panic, `paging enabled, satp=80080223` and
 `INT_MIN = -2147483648` both print correctly, `thread_d`/`user_entry`
 each still produce exactly one clean run of 5 characters, `A`/`B`/`C`/`E`
 keep interleaving correctly.
+
+## Step 21: two small leftovers from Steps 18-19
+
+Two genuine, minor things, not invented ones. First: `Makefile` had
+defined `OBJCOPY = riscv64-linux-gnu-objcopy` since early on, and
+nothing has ever actually used it -- dead configuration, not a tool
+this build needs. Second, and more worth fixing: `kernel.h`'s comment
+on `READ_CSR`/`WRITE_CSR` says "see kernel.c's definitions for why" --
+but Step 19's split moved both macros' *only* definition into
+`kernel.h` itself; there's no separate implementation in `kernel.c` for
+that comment to actually be pointing at. A stale cross-reference left
+over from drafting the comment before deciding where the macros would
+end up living.
+
+Fix: removed the unused `OBJCOPY` line, and rewrote the comment to
+explain the `memory` clobber inline (matching Step 17/18's own
+reasoning) with a correct pointer to this journal instead of a
+nonexistent `kernel.c` definition.
+
+**Verified**: no behavior to change (a Makefile variable and a
+comment, neither touching generated code) -- rebuilt and ran the full
+QEMU capture: no panic, `paging enabled, satp=80080223` and
+`INT_MIN = -2147483648` both print correctly, `thread_d`/`user_entry`
+each still produce exactly one clean run of 5 characters, `A`/`B`/`C`/`E`
+keep interleaving correctly.

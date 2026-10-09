@@ -79,6 +79,9 @@ understandable — you can write and run them yourself in an afternoon.
 - **`kernel.h` include guard**: inert today (one translation unit
   includes it), but a standard `#ifndef`/`#define`/`#endif` guard either
   way, closing a gap Step 19's split left open.
+- **Housekeeping**: removed `Makefile`'s dead `OBJCOPY` variable and
+  fixed a stale comment in `kernel.h` pointing at a `kernel.c`
+  definition that Step 19's split had already moved into the header.
 
 ## Source layout
 
