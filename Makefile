@@ -1,5 +1,4 @@
 CC      = riscv64-linux-gnu-gcc
-OBJCOPY = riscv64-linux-gnu-objcopy
 QEMU    = qemu-system-riscv32
 OPENSBI = /usr/lib/riscv32-linux-gnu/opensbi/generic/fw_dynamic.bin
 

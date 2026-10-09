@@ -48,7 +48,13 @@ void printf(const char *fmt, ...);
 
 paddr_t alloc_pages(uint32_t n);
 
-// Both carry a "memory" clobber -- see kernel.c's definitions for why.
+// Both carry a "memory" clobber: csrr/csrw touch machine state (sie,
+// sstatus, satp, stvec, ...) that memory accesses can depend on in ways
+// the compiler has no other way to know about, so without it, nothing
+// stops the optimizer from treating these as pure, memory-independent
+// operations and reordering ordinary loads/stores across them -- see
+// docs/JOURNAL.md Steps 17-18 for the sfence.vma instance that first
+// surfaced this and the generalization to these two macros.
 #define READ_CSR(reg)                                                   \
     ({                                                                  \
         unsigned long __tmp;                                            \
