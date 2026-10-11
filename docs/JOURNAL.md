@@ -768,3 +768,79 @@ QEMU capture: no panic, `paging enabled, satp=80080223` and
 `INT_MIN = -2147483648` both print correctly, `thread_d`/`user_entry`
 each still produce exactly one clean run of 5 characters, `A`/`B`/`C`/`E`
 keep interleaving correctly.
+
+## Step 22: a dedicated kernel stack for U-mode traps (`sscratch`)
+
+A real gap, not a cosmetic one, called out since Step 11's own journal
+entry and worked around rather than fixed by Step 13's `sstatus.SUM`:
+`kernel_entry` pushes its 32-word trap frame onto whatever `sp` already
+is, and for `user_entry` (the one U-mode thread) that's the
+`PAGE_U`-marked user stack `user_launcher_entry` mapped -- not a kernel
+stack. SUM made that *legal* (S-mode is allowed to touch a `PAGE_U`
+page with it set), but a U-mode program's own stack still isn't a place
+the kernel should be building its own trap state on top of.
+
+The standard fix -- swap to a dedicated kernel stack via `sscratch` the
+moment a trap arrives -- ran into a real obstacle the first time this
+was attempted: `kernel_entry`'s existing frame already uses all 30
+non-`sp` GPRs, leaving no spare register to juggle "which case is this"
+or "what value to restore into `sp`" during the save/restore sequence.
+Unconditionally swapping via `csrrw sp, sscratch, sp` on *every* trap
+doesn't need that register at all, as it turns out -- the original `sp`
+simply sits in `sscratch` until it's convenient to store, and gets
+`lw`'d straight back into `sp` at the very end, no GPR involved either
+way -- but it does need somewhere safe to swap *to*, and a single global
+answer (today's own `kernel_entry` behavior, reused for every trap) is
+exactly wrong for a kernel thread like `thread_a`: those threads keep
+real, variable-depth C call stacks alive *across* `yield()` calls, so
+unconditionally resetting `sp` to a fixed "stack top" on every trap
+would silently overwrite whatever that thread was still using, the
+moment its actual depth happened to be shallower than one frame.
+
+So the swap only applies to traps that genuinely come from U-mode,
+where there's no such risk -- a U-mode thread never uses S-mode stack
+depth between traps, so starting fresh from its own dedicated stack's
+top is always safe. Rather than detect that case at runtime inside a
+single trap handler (the register-pressure problem all over again,
+just moved), `stvec` now picks between two separate, unconditional
+entry points: `kernel_entry` (unchanged) for anything trapping while
+already in S-mode, and a new `kernel_entry_from_user` for U-mode traps,
+which does the `sscratch` swap and saves the original `sp` into one
+extra frame slot (beyond `struct trap_frame`'s own 32, using the exact
+same "save the real register first, then reuse it as scratch" trick
+`kernel_entry` already uses for `sepc`/`sstatus`) so it can be restored
+with a plain `lw sp, ...` instead of an `addi` at the very end.
+
+Each thread now carries its own `stack_top` (the same buffer
+`thread_init` already allocates for `switch_context`, just also usable
+as a trap stack once a thread stops using it for anything else) and
+`trap_vector` (which of the two entry points its own traps should use).
+`yield()` writes both -- `sscratch` and `stvec` -- for whichever thread
+it's about to dispatch, on every switch: that's the only place a
+thread's own choice of entry point can be *restored* after dispatching
+to some other thread in between, and the only place that has to run
+before control actually reaches the dispatched thread's code.
+`user_launcher_entry` updates its own thread's `trap_vector` before
+calling `enter_user_mode`, and `enter_user_mode` itself -- after
+disabling interrupts for the rest of the transition, so a timer
+interrupt can't land between the user stack becoming live and `stvec`
+pointing at the handler that assumes it has -- sets the live `stvec`
+CSR to match, right before the `sret` that actually drops to U-mode for
+the first time.
+
+With the trap frame no longer landing on a `PAGE_U` page at all,
+`sstatus.SUM` (Step 13) has nothing left to permit -- removed, along
+with the now-unused `SSTATUS_SUM` macro, rather than left set for a
+reason that no longer exists.
+
+**Verified**: rebuilt and ran an 8-second QEMU capture (longer than the
+usual check, specifically to catch anything that only shows up after
+many preemptions of the U-mode thread). No panic; `thread_d` and
+`user_entry` each still produce exactly one clean, contiguous run of 5
+characters (`DDDDD`, `UUUUU`); `A`/`B`/`C`/`E` interleave correctly
+across 80 separate preemption transitions in that one run, not just
+once at the start. Also confirmed by temporarily reverting the change
+and comparing: the same capture-and-count method against today's
+`main` showed the identical shape (one clean `DDDDD`/`UUUUU` run each,
+ongoing `A`/`B`/`C`/`E` interleaving), ruling out a pre-existing
+artifact of the test method itself before trusting the post-fix result.

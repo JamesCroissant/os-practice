@@ -82,6 +82,12 @@ understandable — you can write and run them yourself in an afternoon.
 - **Housekeeping**: removed `Makefile`'s dead `OBJCOPY` variable and
   fixed a stale comment in `kernel.h` pointing at a `kernel.c`
   definition that Step 19's split had already moved into the header.
+- **A dedicated kernel stack for U-mode traps**: `kernel_entry_from_user`
+  swaps to each thread's own kernel stack via `sscratch` before building
+  its trap frame, instead of landing that frame on the U-mode program's
+  own (`PAGE_U`-marked) stack -- a real gap left open since Step 11,
+  closed without needing a spare register to track it. `sstatus.SUM`
+  (Step 13) is gone with it: nothing left for it to permit.
 
 ## Source layout
 
