@@ -107,6 +107,7 @@ struct trap_frame {
 
 void handle_trap(struct trap_frame *f);
 void kernel_entry(void);
+void kernel_entry_from_user(void);
 
 #define THREAD_STACK_SIZE 8192
 
@@ -118,6 +119,14 @@ enum thread_state {
 struct thread {
     uint32_t sp;
     enum thread_state state;
+    // The top of this thread's own dedicated kernel stack (same buffer
+    // thread_init() points `sp` into) and the stvec target its traps
+    // should use -- both read by yield() on every dispatch, and both
+    // needed as *values* here rather than derived some other way, since
+    // a thread's actual stack depth at the moment it traps isn't one of
+    // them (see kernel_entry_from_user's own comment in kernel.c).
+    uint32_t stack_top;
+    uint32_t trap_vector;
 };
 
 void switch_context(uint32_t *prev_sp, uint32_t *next_sp);
@@ -142,7 +151,6 @@ void thread_e_entry(void);
 
 #define SSTATUS_SPP (1 << 8)   // trap-return privilege: 0 = U-mode, 1 = S-mode
 #define SSTATUS_SPIE (1 << 5)  // restored into SIE by sret
-#define SSTATUS_SUM (1 << 18)  // permit S-mode loads/stores to PAGE_U pages
 
 __attribute__((noreturn)) void enter_user_mode(uint32_t entry, uint32_t user_sp);
 void user_entry(void);

@@ -269,6 +269,12 @@ void handle_trap(struct trap_frame *f) {
 // pointer to that saved frame, then restores everything and `sret`s.
 // RISC-V requires stvec (which holds this function's address) to be
 // 4-byte aligned.
+//
+// Only ever stvec while the CPU is running in S-mode (kernel_main/
+// idle_thread, or any thread that has never called enter_user_mode) --
+// see kernel_entry_from_user's own comment for the other case, and
+// yield()'s for how the two stay in sync with whichever thread is
+// actually about to run.
 __attribute__((naked))
 __attribute__((aligned(4)))
 void kernel_entry(void) {
@@ -362,6 +368,124 @@ void kernel_entry(void) {
     );
 }
 
+// kernel_entry's own comment explains the 30-GPR-plus-sepc-plus-sstatus
+// frame; this is the same thing for a trap whose sp, at the moment it
+// fires, points at a *user* stack -- PAGE_U-marked (Step 11), so S-mode
+// can't safely treat it as scratch space the way kernel_entry does with
+// a kernel thread's own stack (Step 13's sstatus.SUM working around
+// exactly that, before this function existed).
+//
+// The fix is a dedicated kernel stack per thread (thread_init already
+// allocates one; enter_user_mode's `mv sp, a1` just means it's not this
+// thread's *current* stack once it drops to U-mode) and `csrrw sp,
+// sscratch, sp` to reach it -- an atomic GPR/CSR swap, not two separate
+// instructions, so there's no window where sp is left pointing at
+// neither stack. Crucially, it needs no spare GPR to pull off: sscratch
+// now holds the original (trapped-from) sp, which this frame saves to
+// its own extra 33rd slot the exact same way kernel_entry already saves
+// sepc/sstatus above -- by storing the real t0 first (so t0 is free to
+// reuse), then reading sscratch into it. The reverse, at the very end,
+// doesn't even need that: loading the saved value straight into sp
+// *is* the restore, no separate `addi` to undo the frame afterwards.
+//
+// sscratch has to already hold this thread's own stack top by the time
+// this runs -- set by yield() on every dispatch, not read back out of
+// anywhere in this function, since the whole point is that there's
+// nothing left in any GPR to read it from.
+__attribute__((naked))
+__attribute__((aligned(4)))
+void kernel_entry_from_user(void) {
+    __asm__ __volatile__(
+        "csrrw sp, sscratch, sp\n"
+        "addi sp, sp, -4 * 33\n"
+        "sw ra,   4 * 0(sp)\n"
+        "sw gp,   4 * 1(sp)\n"
+        "sw tp,   4 * 2(sp)\n"
+        "sw t0,   4 * 3(sp)\n"
+        "sw t1,   4 * 4(sp)\n"
+        "sw t2,   4 * 5(sp)\n"
+        "sw s0,   4 * 6(sp)\n"
+        "sw s1,   4 * 7(sp)\n"
+        "sw a0,   4 * 8(sp)\n"
+        "sw a1,   4 * 9(sp)\n"
+        "sw a2,   4 * 10(sp)\n"
+        "sw a3,   4 * 11(sp)\n"
+        "sw a4,   4 * 12(sp)\n"
+        "sw a5,   4 * 13(sp)\n"
+        "sw a6,   4 * 14(sp)\n"
+        "sw a7,   4 * 15(sp)\n"
+        "sw s2,   4 * 16(sp)\n"
+        "sw s3,   4 * 17(sp)\n"
+        "sw s4,   4 * 18(sp)\n"
+        "sw s5,   4 * 19(sp)\n"
+        "sw s6,   4 * 20(sp)\n"
+        "sw s7,   4 * 21(sp)\n"
+        "sw s8,   4 * 22(sp)\n"
+        "sw s9,   4 * 23(sp)\n"
+        "sw s10,  4 * 24(sp)\n"
+        "sw s11,  4 * 25(sp)\n"
+        "sw t3,   4 * 26(sp)\n"
+        "sw t4,   4 * 27(sp)\n"
+        "sw t5,   4 * 28(sp)\n"
+        "sw t6,   4 * 29(sp)\n"
+
+        // Same trick as kernel_entry: t0's real value is already safe at
+        // slot 3, so it's free to reuse as scratch here, once more, for
+        // the original sp that landed in sscratch above.
+        "csrr t0, sepc\n"
+        "sw t0,   4 * 30(sp)\n"
+        "csrr t0, sstatus\n"
+        "sw t0,   4 * 31(sp)\n"
+        "csrr t0, sscratch\n"
+        "sw t0,   4 * 32(sp)\n"
+
+        "mv a0, sp\n"
+        "call handle_trap\n"
+
+        "lw t0,   4 * 30(sp)\n"
+        "csrw sepc, t0\n"
+        "lw t0,   4 * 31(sp)\n"
+        "csrw sstatus, t0\n"
+
+        "lw ra,   4 * 0(sp)\n"
+        "lw gp,   4 * 1(sp)\n"
+        "lw tp,   4 * 2(sp)\n"
+        "lw t0,   4 * 3(sp)\n"
+        "lw t1,   4 * 4(sp)\n"
+        "lw t2,   4 * 5(sp)\n"
+        "lw s0,   4 * 6(sp)\n"
+        "lw s1,   4 * 7(sp)\n"
+        "lw a0,   4 * 8(sp)\n"
+        "lw a1,   4 * 9(sp)\n"
+        "lw a2,   4 * 10(sp)\n"
+        "lw a3,   4 * 11(sp)\n"
+        "lw a4,   4 * 12(sp)\n"
+        "lw a5,   4 * 13(sp)\n"
+        "lw a6,   4 * 14(sp)\n"
+        "lw a7,   4 * 15(sp)\n"
+        "lw s2,   4 * 16(sp)\n"
+        "lw s3,   4 * 17(sp)\n"
+        "lw s4,   4 * 18(sp)\n"
+        "lw s5,   4 * 19(sp)\n"
+        "lw s6,   4 * 20(sp)\n"
+        "lw s7,   4 * 21(sp)\n"
+        "lw s8,   4 * 22(sp)\n"
+        "lw s9,   4 * 23(sp)\n"
+        "lw s10,  4 * 24(sp)\n"
+        "lw s11,  4 * 25(sp)\n"
+        "lw t3,   4 * 26(sp)\n"
+        "lw t4,   4 * 27(sp)\n"
+        "lw t5,   4 * 28(sp)\n"
+        "lw t6,   4 * 29(sp)\n"
+
+        // Restores sp directly from the frame instead of `addi`-ing the
+        // frame away first -- this *is* the original (trapped-from, user)
+        // sp, not the kernel stack's, so there's nothing left to balance.
+        "lw sp,   4 * 32(sp)\n"
+        "sret\n"
+    );
+}
+
 // A context switch saves the CPU state of the thread giving up the CPU
 // and restores the state of the one taking over -- that's the entire
 // mechanism multiple threads sharing one CPU are built on. "CPU state"
@@ -450,13 +574,20 @@ __attribute__((naked)) void thread_trampoline(void) {
 // per pool slot regardless of whether it's ever used.
 void thread_init(struct thread *th, void (*entry)(void)) {
     paddr_t stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
-    uint32_t *sp = (uint32_t *)(stack_bottom + THREAD_STACK_SIZE);
+    uint32_t stack_top = stack_bottom + THREAD_STACK_SIZE;
+    uint32_t *sp = (uint32_t *)stack_top;
     sp -= 13;
     // No need to zero sp[2..12] (s1-s11) here -- alloc_pages() already
     // zeroed the whole stack. Only sp[0]/sp[1] (ra/s0) carry real values.
     sp[0] = (uint32_t)thread_trampoline;  // ra
     sp[1] = (uint32_t)entry;              // s0 -- read by the trampoline above
     th->sp = (uint32_t)sp;
+    th->stack_top = stack_top;
+    // Every thread starts out running in S-mode, with no stack switch on
+    // its own traps (today's plain kernel_entry) -- user_launcher_entry
+    // is the one thread that ever changes this, right before it drops to
+    // U-mode for good (see its own comment).
+    th->trap_vector = (uint32_t)kernel_entry;
 }
 
 // A fixed-size pool instead of thread_a/thread_b as named globals: with a
@@ -520,6 +651,17 @@ void yield(void) {
 
     struct thread *prev = current_thread;
     current_thread = next;
+    // Whichever stack/vector `next`'s own future traps should use has to
+    // be live *before* switch_context actually hands it the CPU -- there's
+    // no other point left to set these once control is sitting inside
+    // next's own code (possibly already past the one spot, like
+    // user_launcher_entry's, that would otherwise update them). Harmless
+    // for a plain kernel thread (kernel_entry never reads sscratch), and
+    // the only way to *undo* a previous dispatch to the one thread that
+    // does (see kernel_entry_from_user's own comment) when switching away
+    // from it to anyone else.
+    WRITE_CSR(sscratch, next->stack_top);
+    WRITE_CSR(stvec, next->trap_vector);
     switch_context(&prev->sp, &next->sp);
 }
 
@@ -599,10 +741,19 @@ void thread_e_entry(void) {
 // now that sepc/sstatus are saved per-thread rather than read live off
 // the CPU -- before that fix, a thread resumed by some *other* thread's
 // trap would silently come back in the wrong privilege mode.
+//
+// Also switches stvec to kernel_entry_from_user (see that function's own
+// comment for why U-mode traps need a different entry point than S-mode
+// ones) -- interrupts are disabled first (sstatus.SIE, restored by sret
+// from SPIE below, same as any other trap return) so a timer interrupt
+// can't land in between sp moving to the user stack and stvec pointing
+// at the handler that assumes it has.
 __attribute__((naked)) __attribute__((noreturn))
 void enter_user_mode(uint32_t entry __attribute__((unused)),
                       uint32_t user_sp __attribute__((unused))) {
     __asm__ __volatile__(
+        "csrci sstatus, 2\n"
+
         "csrw sepc, a0\n"
 
         "csrr t0, sstatus\n"
@@ -614,6 +765,10 @@ void enter_user_mode(uint32_t entry __attribute__((unused)),
         "csrw sstatus, t0\n"
 
         "mv sp, a1\n"
+
+        "la t0, kernel_entry_from_user\n"
+        "csrw stvec, t0\n"
+
         "sret\n"
         :
         : [spp] "i"(SSTATUS_SPP), [spie] "i"(SSTATUS_SPIE)
@@ -646,18 +801,23 @@ void user_entry(void) {
 // Runs in S-mode, exactly like thread_a/b/c/d/e, right up until it hands
 // off to enter_user_mode() -- a separate stack for the U-mode program,
 // distinct from this thread's own kernel stack (thread_init already gave
-// it one; that stack is simply abandoned, mid-call, the moment
-// enter_user_mode's `mv sp, a1` points sp at this one instead).
+// it one; that stack is where this thread's *own* traps now land, via
+// kernel_entry_from_user, instead of being abandoned mid-call the moment
+// enter_user_mode's `mv sp, a1` points sp at the user one instead).
 //
 // alloc_pages() hands back memory the main identity map in kernel_main
 // already covers, but *without* PAGE_U (kernel_main deliberately keeps
 // that off everything it maps, since S-mode can never execute a PAGE_U
 // page -- see Step 11's journal entry): re-mapping just this range adds
 // PAGE_U so the U-mode program can actually use it as its own stack.
-// S-mode still needs to read/write this same stack too, the moment a
-// trap lands kernel_entry's frame on it -- that needs sstatus.SUM set
-// (Step 13), not just PAGE_U on the mapping.
+//
+// trap_vector has to be updated here, before enter_user_mode ever runs --
+// see kernel_entry_from_user's own comment for why a U-mode thread's
+// traps need a different entry point, and yield()'s for why every future
+// dispatch back to this thread needs to see the updated value too.
 void user_launcher_entry(void) {
+    current_thread->trap_vector = (uint32_t)kernel_entry_from_user;
+
     paddr_t user_stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
     for (paddr_t paddr = user_stack_bottom; paddr < user_stack_bottom + THREAD_STACK_SIZE;
          paddr += PAGE_SIZE) {
@@ -716,17 +876,12 @@ void kernel_main(void) {
     WRITE_CSR(sie, READ_CSR(sie) | (1 << 5));
     WRITE_CSR(sstatus, READ_CSR(sstatus) | (1 << 1));
 
-    // SSTATUS_SUM, separately: per the RISC-V privileged spec, S-mode
-    // loads/stores to a PAGE_U page fault unless this is set -- and
-    // kernel_entry's own trap-frame push does exactly that the moment a
-    // U-mode thread (Step 11) traps, since sp at that point is the
-    // user_launcher_entry-allocated, PAGE_U-marked user stack, not a
-    // kernel one (there's no sscratch-based kernel-stack switch yet, a
-    // gap Step 11's journal already calls out). QEMU happens not to
-    // enforce this, which is how it went unnoticed until checking
-    // sstatus directly turned up SUM reading back as 0 -- worth setting
-    // correctly regardless of what one emulator currently lets slide.
-    WRITE_CSR(sstatus, READ_CSR(sstatus) | SSTATUS_SUM);
+    // No SSTATUS_SUM here (Step 13 used to set it): that was only ever
+    // needed because kernel_entry's trap-frame push landed on the
+    // U-mode thread's own PAGE_U stack. kernel_entry_from_user's
+    // dedicated-kernel-stack switch (see its own comment) means S-mode
+    // never touches a PAGE_U page at all now, so the one reason SUM was
+    // set is gone -- removed instead of left set but unused.
     arm_timer();
 
     printf("\n\nHello World!\n");
