@@ -391,7 +391,13 @@ void kernel_entry(void) {
 // sscratch has to already hold this thread's own stack top by the time
 // this runs -- set by yield() on every dispatch, not read back out of
 // anywhere in this function, since the whole point is that there's
-// nothing left in any GPR to read it from.
+// nothing left in any GPR to read it from. But yield() isn't the only
+// way out of here: an ecall that doesn't hit SCAUSE_SUPERVISOR_TIMER_
+// INTERRUPT (SYS_PUTCHAR, say) returns from handle_trap without ever
+// calling it, straight into this same function's own epilogue -- which
+// has to re-arm sscratch back to stack_top itself before its own sret,
+// or the *next* trap would swap sp to whatever this one's trapped-from
+// sp happened to be instead.
 __attribute__((naked))
 __attribute__((aligned(4)))
 void kernel_entry_from_user(void) {
@@ -446,6 +452,19 @@ void kernel_entry_from_user(void) {
         "csrw sepc, t0\n"
         "lw t0,   4 * 31(sp)\n"
         "csrw sstatus, t0\n"
+
+        // sscratch was repurposed by the prologue's swap -- it's held
+        // this thread's *trapped-from* sp (saved above, slot 32) ever
+        // since, not its stack_top, so a trap that returns without ever
+        // calling yield() (any ecall that isn't a timer interrupt) would
+        // otherwise resume with sscratch still wrong for next time. sp
+        // right now is still this frame's base, i.e. stack_top - 33
+        // words -- recomputing it here, with t0 still free (its real
+        // value isn't restored until the lw below), re-establishes the
+        // invariant unconditionally, the same way yield() does for the
+        // dispatch path.
+        "addi t0, sp, 4 * 33\n"
+        "csrw sscratch, t0\n"
 
         "lw ra,   4 * 0(sp)\n"
         "lw gp,   4 * 1(sp)\n"
