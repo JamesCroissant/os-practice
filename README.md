@@ -88,6 +88,11 @@ understandable — you can write and run them yourself in an afternoon.
   own (`PAGE_U`-marked) stack -- a real gap left open since Step 11,
   closed without needing a spare register to track it. `sstatus.SUM`
   (Step 13) is gone with it: nothing left for it to permit.
+- **`kernel_entry_from_user` re-arms `sscratch` on every return path**:
+  not just the one that happens to call `yield()` -- a plain `SYS_PUTCHAR`
+  ecall was leaving `sscratch` pointing at the wrong thing for the next
+  trap, invisible only because `user_entry` never moves its own stack
+  pointer between syscalls.
 
 ## Source layout
 

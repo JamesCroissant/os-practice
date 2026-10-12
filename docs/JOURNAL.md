@@ -844,3 +844,53 @@ and comparing: the same capture-and-count method against today's
 `main` showed the identical shape (one clean `DDDDD`/`UUUUU` run each,
 ongoing `A`/`B`/`C`/`E` interleaving), ruling out a pre-existing
 artifact of the test method itself before trusting the post-fix result.
+
+## Step 23: `kernel_entry_from_user` left `sscratch` stale after any trap that didn't yield
+
+Found reviewing Step 22's own code the day after writing it, not by a
+visible failure -- same pattern as Step 13. That function's prologue
+swaps `sp`/`sscratch` unconditionally (`csrrw sp, sscratch, sp`), which
+leaves `sscratch` holding the *trapped-from* sp (needed later, saved to
+the frame's own extra slot) instead of this thread's `stack_top` --
+exactly the value the *next* trap's prologue needs it to hold. The only
+place that ever wrote `stack_top` back into `sscratch` was `yield()`,
+on a dispatch. That's fine for a timer interrupt (`handle_trap` always
+calls `yield()` for one), but `SYS_PUTCHAR` -- the far more common case,
+five calls out of six for `user_entry` -- returns straight from
+`handle_trap` without ever touching `yield()`, so `kernel_entry_from_user`
+itself would `sret` with `sscratch` left wrong for whatever trap comes
+next.
+
+Invisible yesterday because `user_entry` never moves its own `sp`
+between `ecall`s: the stale value `sscratch` was left holding (this
+trap's own trapped-from sp) happens to equal the *next* trap's real sp
+too, so the swap still (accidentally) produces a usable address --
+just the wrong *kind* of address, landing the next frame 33 words below
+the user's own stack pointer instead of below `stack_top`. Confirmed
+directly: a temporary debug print of the trap-frame pointer itself
+(`f`, not `sscratch`, since reading `sscratch` from C happens after the
+same trap's own prologue has already repurposed it) showed
+`stack_top - 132` on the first `SYS_PUTCHAR` trap (set correctly by
+`yield()`'s dispatch) but a different, wrong address on every one
+after it; commenting out just the two-instruction fix below reproduced
+that wrong address exactly, putting the question beyond doubt before
+trusting the fix.
+
+Fix: `kernel_entry_from_user`'s epilogue now recomputes `stack_top`
+from `sp` itself (`sp` at that point is still the frame's base, i.e.
+`stack_top - 33` words, so `addi t0, sp, 4*33` recovers it exactly) and
+writes it back to `sscratch`, unconditionally, right before the GPR
+restore -- using `t0` as scratch the same way the prologue already
+does for `sepc`/`sstatus`, since its real saved value isn't reloaded
+until afterward. This re-establishes the invariant on *every* return
+path out of this function, not just the one that happens to run
+`yield()`.
+
+**Verified**: the same debug-print method as above, this time with the
+fix in place -- all five `SYS_PUTCHAR` traps now show the frame pointer
+at the correct `stack_top - 132` (`0x80240f7c` against
+`stack_top = 0x80241000`), not just the first one. Removed the debug
+print, rebuilt clean, and ran a 10-second QEMU capture: no panic,
+`thread_d`/`user_entry` each still produce exactly one clean run of 5
+characters, `A`/`B`/`C`/`E` interleave across 100 separate preemption
+transitions in that run.
