@@ -270,6 +270,77 @@ void handle_trap(struct trap_frame *f) {
 // RISC-V requires stvec (which holds this function's address) to be
 // 4-byte aligned.
 //
+// kernel_entry and kernel_entry_from_user save/restore the exact same 30
+// registers at the exact same offsets -- only what happens around that
+// (which stack, what else gets saved) differs. Factored out so the two
+// can't quietly drift apart from each other the way Step 23's sscratch
+// fix had to notice and correct; adjacent string literals concatenate at
+// compile time, so these expand inline into each function's own asm
+// template exactly as if they'd been written out by hand.
+#define SAVE_ALL_GPRS \
+    "sw ra,   4 * 0(sp)\n" \
+    "sw gp,   4 * 1(sp)\n" \
+    "sw tp,   4 * 2(sp)\n" \
+    "sw t0,   4 * 3(sp)\n" \
+    "sw t1,   4 * 4(sp)\n" \
+    "sw t2,   4 * 5(sp)\n" \
+    "sw s0,   4 * 6(sp)\n" \
+    "sw s1,   4 * 7(sp)\n" \
+    "sw a0,   4 * 8(sp)\n" \
+    "sw a1,   4 * 9(sp)\n" \
+    "sw a2,   4 * 10(sp)\n" \
+    "sw a3,   4 * 11(sp)\n" \
+    "sw a4,   4 * 12(sp)\n" \
+    "sw a5,   4 * 13(sp)\n" \
+    "sw a6,   4 * 14(sp)\n" \
+    "sw a7,   4 * 15(sp)\n" \
+    "sw s2,   4 * 16(sp)\n" \
+    "sw s3,   4 * 17(sp)\n" \
+    "sw s4,   4 * 18(sp)\n" \
+    "sw s5,   4 * 19(sp)\n" \
+    "sw s6,   4 * 20(sp)\n" \
+    "sw s7,   4 * 21(sp)\n" \
+    "sw s8,   4 * 22(sp)\n" \
+    "sw s9,   4 * 23(sp)\n" \
+    "sw s10,  4 * 24(sp)\n" \
+    "sw s11,  4 * 25(sp)\n" \
+    "sw t3,   4 * 26(sp)\n" \
+    "sw t4,   4 * 27(sp)\n" \
+    "sw t5,   4 * 28(sp)\n" \
+    "sw t6,   4 * 29(sp)\n"
+
+#define RESTORE_ALL_GPRS \
+    "lw ra,   4 * 0(sp)\n" \
+    "lw gp,   4 * 1(sp)\n" \
+    "lw tp,   4 * 2(sp)\n" \
+    "lw t0,   4 * 3(sp)\n" \
+    "lw t1,   4 * 4(sp)\n" \
+    "lw t2,   4 * 5(sp)\n" \
+    "lw s0,   4 * 6(sp)\n" \
+    "lw s1,   4 * 7(sp)\n" \
+    "lw a0,   4 * 8(sp)\n" \
+    "lw a1,   4 * 9(sp)\n" \
+    "lw a2,   4 * 10(sp)\n" \
+    "lw a3,   4 * 11(sp)\n" \
+    "lw a4,   4 * 12(sp)\n" \
+    "lw a5,   4 * 13(sp)\n" \
+    "lw a6,   4 * 14(sp)\n" \
+    "lw a7,   4 * 15(sp)\n" \
+    "lw s2,   4 * 16(sp)\n" \
+    "lw s3,   4 * 17(sp)\n" \
+    "lw s4,   4 * 18(sp)\n" \
+    "lw s5,   4 * 19(sp)\n" \
+    "lw s6,   4 * 20(sp)\n" \
+    "lw s7,   4 * 21(sp)\n" \
+    "lw s8,   4 * 22(sp)\n" \
+    "lw s9,   4 * 23(sp)\n" \
+    "lw s10,  4 * 24(sp)\n" \
+    "lw s11,  4 * 25(sp)\n" \
+    "lw t3,   4 * 26(sp)\n" \
+    "lw t4,   4 * 27(sp)\n" \
+    "lw t5,   4 * 28(sp)\n" \
+    "lw t6,   4 * 29(sp)\n"
+
 // Only ever stvec while the CPU is running in S-mode (kernel_main/
 // idle_thread, or any thread that has never called enter_user_mode) --
 // see kernel_entry_from_user's own comment for the other case, and
@@ -280,36 +351,7 @@ __attribute__((aligned(4)))
 void kernel_entry(void) {
     __asm__ __volatile__(
         "addi sp, sp, -4 * 32\n"
-        "sw ra,   4 * 0(sp)\n"
-        "sw gp,   4 * 1(sp)\n"
-        "sw tp,   4 * 2(sp)\n"
-        "sw t0,   4 * 3(sp)\n"
-        "sw t1,   4 * 4(sp)\n"
-        "sw t2,   4 * 5(sp)\n"
-        "sw s0,   4 * 6(sp)\n"
-        "sw s1,   4 * 7(sp)\n"
-        "sw a0,   4 * 8(sp)\n"
-        "sw a1,   4 * 9(sp)\n"
-        "sw a2,   4 * 10(sp)\n"
-        "sw a3,   4 * 11(sp)\n"
-        "sw a4,   4 * 12(sp)\n"
-        "sw a5,   4 * 13(sp)\n"
-        "sw a6,   4 * 14(sp)\n"
-        "sw a7,   4 * 15(sp)\n"
-        "sw s2,   4 * 16(sp)\n"
-        "sw s3,   4 * 17(sp)\n"
-        "sw s4,   4 * 18(sp)\n"
-        "sw s5,   4 * 19(sp)\n"
-        "sw s6,   4 * 20(sp)\n"
-        "sw s7,   4 * 21(sp)\n"
-        "sw s8,   4 * 22(sp)\n"
-        "sw s9,   4 * 23(sp)\n"
-        "sw s10,  4 * 24(sp)\n"
-        "sw s11,  4 * 25(sp)\n"
-        "sw t3,   4 * 26(sp)\n"
-        "sw t4,   4 * 27(sp)\n"
-        "sw t5,   4 * 28(sp)\n"
-        "sw t6,   4 * 29(sp)\n"
+        SAVE_ALL_GPRS
 
         // sepc/sstatus onto *this* thread's own trap frame -- t0 is
         // already safely saved above (slot 3), so it's free to reuse as
@@ -333,36 +375,7 @@ void kernel_entry(void) {
         "lw t0,   4 * 31(sp)\n"
         "csrw sstatus, t0\n"
 
-        "lw ra,   4 * 0(sp)\n"
-        "lw gp,   4 * 1(sp)\n"
-        "lw tp,   4 * 2(sp)\n"
-        "lw t0,   4 * 3(sp)\n"
-        "lw t1,   4 * 4(sp)\n"
-        "lw t2,   4 * 5(sp)\n"
-        "lw s0,   4 * 6(sp)\n"
-        "lw s1,   4 * 7(sp)\n"
-        "lw a0,   4 * 8(sp)\n"
-        "lw a1,   4 * 9(sp)\n"
-        "lw a2,   4 * 10(sp)\n"
-        "lw a3,   4 * 11(sp)\n"
-        "lw a4,   4 * 12(sp)\n"
-        "lw a5,   4 * 13(sp)\n"
-        "lw a6,   4 * 14(sp)\n"
-        "lw a7,   4 * 15(sp)\n"
-        "lw s2,   4 * 16(sp)\n"
-        "lw s3,   4 * 17(sp)\n"
-        "lw s4,   4 * 18(sp)\n"
-        "lw s5,   4 * 19(sp)\n"
-        "lw s6,   4 * 20(sp)\n"
-        "lw s7,   4 * 21(sp)\n"
-        "lw s8,   4 * 22(sp)\n"
-        "lw s9,   4 * 23(sp)\n"
-        "lw s10,  4 * 24(sp)\n"
-        "lw s11,  4 * 25(sp)\n"
-        "lw t3,   4 * 26(sp)\n"
-        "lw t4,   4 * 27(sp)\n"
-        "lw t5,   4 * 28(sp)\n"
-        "lw t6,   4 * 29(sp)\n"
+        RESTORE_ALL_GPRS
         "addi sp, sp, 4 * 32\n"
         "sret\n"
     );
@@ -404,36 +417,7 @@ void kernel_entry_from_user(void) {
     __asm__ __volatile__(
         "csrrw sp, sscratch, sp\n"
         "addi sp, sp, -4 * 33\n"
-        "sw ra,   4 * 0(sp)\n"
-        "sw gp,   4 * 1(sp)\n"
-        "sw tp,   4 * 2(sp)\n"
-        "sw t0,   4 * 3(sp)\n"
-        "sw t1,   4 * 4(sp)\n"
-        "sw t2,   4 * 5(sp)\n"
-        "sw s0,   4 * 6(sp)\n"
-        "sw s1,   4 * 7(sp)\n"
-        "sw a0,   4 * 8(sp)\n"
-        "sw a1,   4 * 9(sp)\n"
-        "sw a2,   4 * 10(sp)\n"
-        "sw a3,   4 * 11(sp)\n"
-        "sw a4,   4 * 12(sp)\n"
-        "sw a5,   4 * 13(sp)\n"
-        "sw a6,   4 * 14(sp)\n"
-        "sw a7,   4 * 15(sp)\n"
-        "sw s2,   4 * 16(sp)\n"
-        "sw s3,   4 * 17(sp)\n"
-        "sw s4,   4 * 18(sp)\n"
-        "sw s5,   4 * 19(sp)\n"
-        "sw s6,   4 * 20(sp)\n"
-        "sw s7,   4 * 21(sp)\n"
-        "sw s8,   4 * 22(sp)\n"
-        "sw s9,   4 * 23(sp)\n"
-        "sw s10,  4 * 24(sp)\n"
-        "sw s11,  4 * 25(sp)\n"
-        "sw t3,   4 * 26(sp)\n"
-        "sw t4,   4 * 27(sp)\n"
-        "sw t5,   4 * 28(sp)\n"
-        "sw t6,   4 * 29(sp)\n"
+        SAVE_ALL_GPRS
 
         // Same trick as kernel_entry: t0's real value is already safe at
         // slot 3, so it's free to reuse as scratch here, once more, for
@@ -466,36 +450,7 @@ void kernel_entry_from_user(void) {
         "addi t0, sp, 4 * 33\n"
         "csrw sscratch, t0\n"
 
-        "lw ra,   4 * 0(sp)\n"
-        "lw gp,   4 * 1(sp)\n"
-        "lw tp,   4 * 2(sp)\n"
-        "lw t0,   4 * 3(sp)\n"
-        "lw t1,   4 * 4(sp)\n"
-        "lw t2,   4 * 5(sp)\n"
-        "lw s0,   4 * 6(sp)\n"
-        "lw s1,   4 * 7(sp)\n"
-        "lw a0,   4 * 8(sp)\n"
-        "lw a1,   4 * 9(sp)\n"
-        "lw a2,   4 * 10(sp)\n"
-        "lw a3,   4 * 11(sp)\n"
-        "lw a4,   4 * 12(sp)\n"
-        "lw a5,   4 * 13(sp)\n"
-        "lw a6,   4 * 14(sp)\n"
-        "lw a7,   4 * 15(sp)\n"
-        "lw s2,   4 * 16(sp)\n"
-        "lw s3,   4 * 17(sp)\n"
-        "lw s4,   4 * 18(sp)\n"
-        "lw s5,   4 * 19(sp)\n"
-        "lw s6,   4 * 20(sp)\n"
-        "lw s7,   4 * 21(sp)\n"
-        "lw s8,   4 * 22(sp)\n"
-        "lw s9,   4 * 23(sp)\n"
-        "lw s10,  4 * 24(sp)\n"
-        "lw s11,  4 * 25(sp)\n"
-        "lw t3,   4 * 26(sp)\n"
-        "lw t4,   4 * 27(sp)\n"
-        "lw t5,   4 * 28(sp)\n"
-        "lw t6,   4 * 29(sp)\n"
+        RESTORE_ALL_GPRS
 
         // Restores sp directly from the frame instead of `addi`-ing the
         // frame away first -- this *is* the original (trapped-from, user)
@@ -504,6 +459,9 @@ void kernel_entry_from_user(void) {
         "sret\n"
     );
 }
+
+#undef SAVE_ALL_GPRS
+#undef RESTORE_ALL_GPRS
 
 // A context switch saves the CPU state of the thread giving up the CPU
 // and restores the state of the one taking over -- that's the entire
