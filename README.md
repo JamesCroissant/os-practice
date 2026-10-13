@@ -93,6 +93,11 @@ understandable — you can write and run them yourself in an afternoon.
   ecall was leaving `sscratch` pointing at the wrong thing for the next
   trap, invisible only because `user_entry` never moves its own stack
   pointer between syscalls.
+- **One shared register list for both trap entry points**: `kernel_entry`
+  and `kernel_entry_from_user` used to carry the same 30-register
+  save/restore sequence twice, verbatim -- the exact shape of risk that
+  let Step 23's bug happen in the first place. Now defined once and
+  reused by both, confirmed byte-identical in the generated code.
 
 ## Source layout
 

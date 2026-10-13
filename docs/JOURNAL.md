@@ -894,3 +894,31 @@ print, rebuilt clean, and ran a 10-second QEMU capture: no panic,
 `thread_d`/`user_entry` each still produce exactly one clean run of 5
 characters, `A`/`B`/`C`/`E` interleave across 100 separate preemption
 transitions in that run.
+
+## Step 24: factored out `kernel_entry`/`kernel_entry_from_user`'s duplicated register list
+
+Not a bug -- a cleanup, asked for directly rather than found while
+hunting for one. The two functions save/restore the exact same 30
+registers at the exact same stack offsets (60 lines each, 120 total);
+only what happens around that -- which stack, what else gets saved --
+actually differs between them. That duplication is exactly the shape
+of risk Step 23 just ran into: two near-identical blocks that can drift
+out of sync with each other without either one looking wrong on its
+own.
+
+Fix: pulled the shared `sw`/`lw` sequences into `SAVE_ALL_GPRS` and
+`RESTORE_ALL_GPRS`, two C preprocessor macros defined once, right
+before `kernel_entry`, and `#undef`'d right after `kernel_entry_from_user`
+since nothing else uses them. Adjacent string literals concatenate at
+compile time, so each macro expands inline into its caller's own
+`__asm__` template exactly as if the 30 lines had been written out by
+hand -- no runtime indirection, no new instructions, just one source of
+truth instead of two.
+
+**Verified**: compared `.text`, `.text.user`, `.rodata`, and `.data`
+section contents via `objcopy --only-section` + `md5sum` before and
+after -- all four hashes identical, confirming the generated code
+didn't change at all (as a pure refactor shouldn't). Rebuilt clean and
+ran a 10-second QEMU capture anyway: no panic, `thread_d`/`user_entry`
+each still produce exactly one clean run of 5 characters, `A`/`B`/`C`/`E`
+keep interleaving.
