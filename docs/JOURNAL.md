@@ -922,3 +922,29 @@ didn't change at all (as a pure refactor shouldn't). Rebuilt clean and
 ran a 10-second QEMU capture anyway: no panic, `thread_d`/`user_entry`
 each still produce exactly one clean run of 5 characters, `A`/`B`/`C`/`E`
 keep interleaving.
+
+## Step 25: README's `sstatus.SUM` bullet described code that no longer exists
+
+A documentation bug, not a code one -- but a real one, the same class
+as Step 21's stale comment. Step 13 added a "What's implemented" bullet
+for `sstatus.SUM`, written in the present tense ("set correctly... —
+S-mode needs it to read/write a `PAGE_U` page, which `kernel_entry`'s
+own trap-frame push does"). Step 22 then deleted that exact mechanism
+-- the `WRITE_CSR(sstatus, ... | SSTATUS_SUM)` call, the macro, and the
+PAGE_U trap-frame push it was describing -- and documented the removal
+correctly in its *own* bullet and journal entry, but never went back to
+fix the older bullet this made false. `grep -rn SUM` across the whole
+tree turned it up: every other hit was already past tense or clearly
+historical; this one still asserted a current fact about code that's
+been gone for three days.
+
+Fix: reworded the bullet to say what actually happened -- SUM was
+needed, then superseded once Step 22 removed the one reason it existed
+-- and marked it explicitly as historical rather than silently leaving
+it to contradict the Step 22/24 bullets sitting right below it.
+
+**Verified**: `grep -rn SUM` across `kernel.c`, `kernel.h`, `README.md`,
+and `docs/JOURNAL.md` again after the edit -- every remaining
+occurrence is now either in this journal's own past-tense account or
+correctly marked superseded; nothing still claims SUM is set. No code
+changed, so no rebuild or QEMU run was needed.

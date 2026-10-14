@@ -52,10 +52,13 @@ understandable — you can write and run them yourself in an afternoon.
   `thread_exit()` a kernel thread's entry function returning into (Step
   7) already uses — a syscall away rather than a plain C `return`, since
   U-mode has no such thing as "returning into the kernel".
-- **`sstatus.SUM`**: set correctly, rather than relying on QEMU not
-  enforcing it — S-mode needs it to read/write a `PAGE_U` page, which
-  `kernel_entry`'s own trap-frame push does the moment a U-mode thread
-  traps onto its own (`PAGE_U`-marked) stack.
+- **`sstatus.SUM`** *(superseded by Step 22 below — kept here for the
+  project's own history, not as a description of current behavior)*:
+  set correctly, rather than relying on QEMU not enforcing it — S-mode
+  needed it to read/write a `PAGE_U` page, which `kernel_entry`'s own
+  trap-frame push did the moment a U-mode thread trapped onto its own
+  (`PAGE_U`-marked) stack. Removed once Step 22's dedicated kernel stack
+  meant S-mode never touched a `PAGE_U` page at all.
 - **Well-defined scheduler bookkeeping**: `yield()` no longer subtracts
   pointers to two unrelated objects (undefined behavior, even though it
   happened to produce a usable value) to detect the one case — the very
