@@ -155,6 +155,8 @@ void thread_e_entry(void);
 __attribute__((noreturn)) void enter_user_mode(uint32_t entry, uint32_t user_sp);
 void user_entry(void);
 void user_launcher_entry(void);
+void user_entry2(void);
+void user_launcher_entry2(void);
 
 void kernel_main(void);
 void boot(void);

@@ -803,6 +803,47 @@ void user_launcher_entry(void) {
     enter_user_mode((uint32_t)user_entry, user_stack_bottom + THREAD_STACK_SIZE);
 }
 
+// A second, independently-launched U-mode program -- same shape as
+// user_entry/user_launcher_entry, printing 'V' instead of 'U'. Until
+// now, exactly one U-mode thread ever existed, which left kernel_entry_
+// from_user's per-thread stack_top/trap_vector design (Step 22) resting
+// entirely on static reasoning about *other* threads -- never actually
+// exercised with two U-mode threads whose traps could interleave and
+// preempt each other, the same gap thread_a/b/c (not just one kernel
+// thread) closed for the kernel-thread side of the scheduler.
+__attribute__((naked)) __attribute__((section(".text.user")))
+void user_entry2(void) {
+    __asm__ __volatile__(
+        "li a3, %[sys_putchar]\n"
+        "li a0, 'V'\n"
+        "li t0, 5\n"
+        "1:\n"
+        "ecall\n"
+        "addi t0, t0, -1\n"
+        "bnez t0, 1b\n"
+        "li a3, %[sys_exit]\n"
+        "ecall\n"
+        :
+        : [sys_putchar] "i"(SYS_PUTCHAR), [sys_exit] "i"(SYS_EXIT)
+    );
+}
+
+// Same shape as user_launcher_entry -- see its own comment for why
+// trap_vector is set here and why the stack has to be mapped with
+// PAGE_U. A second, separately-allocated stack and thread slot, not a
+// shared one: the whole point is for this thread's own stack_top and
+// trap_vector to be independent of user_launcher_entry's.
+void user_launcher_entry2(void) {
+    current_thread->trap_vector = (uint32_t)kernel_entry_from_user;
+
+    paddr_t user_stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
+    for (paddr_t paddr = user_stack_bottom; paddr < user_stack_bottom + THREAD_STACK_SIZE;
+         paddr += PAGE_SIZE) {
+        map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_U);
+    }
+    enter_user_mode((uint32_t)user_entry2, user_stack_bottom + THREAD_STACK_SIZE);
+}
+
 void kernel_main(void) {
     // The linker only reserves space for .bss; nothing has zeroed it yet.
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
@@ -876,6 +917,10 @@ void kernel_main(void) {
     thread_create(thread_d_entry);
     thread_create(thread_e_entry);
     thread_create(user_launcher_entry);
+    // A second, independent U-mode thread -- see user_launcher_entry2's
+    // own comment for why one U-mode thread was never enough to actually
+    // exercise kernel_entry_from_user's per-thread design.
+    thread_create(user_launcher_entry2);
 
     // kernel_main is current_thread's placeholder (idle_thread) until
     // this first yield() hands off to whichever thread the scheduler
