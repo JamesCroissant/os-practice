@@ -948,3 +948,40 @@ and `docs/JOURNAL.md` again after the edit -- every remaining
 occurrence is now either in this journal's own past-tense account or
 correctly marked superseded; nothing still claims SUM is set. No code
 changed, so no rebuild or QEMU run was needed.
+
+## Step 26: a second, independent U-mode thread
+
+Not a bug, not a refactor -- a genuinely missing feature, in the same
+spirit as "three kernel threads, not two" from early on: proving a
+mechanism generalizes by actually running it more than once, instead
+of resting on reasoning about a single instance. Since Step 11,
+exactly one U-mode thread (`user_launcher_entry`/`user_entry`) has ever
+existed. That meant Step 22's per-thread `stack_top`/`trap_vector`
+design -- the whole point of which is that *each* U-mode thread gets
+its own dedicated kernel stack and its own `sscratch`/`stvec` values,
+restored correctly by `yield()` on every dispatch -- has only ever been
+checked by reading the code carefully, never by actually putting two
+independent instances of it in front of the scheduler at once and
+watching them get preempted, interleaved, and resumed independently.
+
+Added `user_entry2`/`user_launcher_entry2`: the exact same shape as
+`user_entry`/`user_launcher_entry`, printing `'V'` instead of `'U'`,
+launched as its own thread (the 7th of `MAX_THREADS`'s 8 slots) with
+its own separately-allocated user stack and its own dedicated kernel
+stack via `thread_init`. Nothing about `kernel_entry_from_user`,
+`yield()`, or `enter_user_mode` needed to change -- if the per-thread
+design from Step 22/23 were actually broken (say, if `stack_top` or
+`trap_vector` were accidentally shared instead of per-thread fields),
+this is exactly the kind of addition that would have exposed it, by
+giving two U-mode threads' traps a real chance to interleave with each
+other instead of just with kernel threads.
+
+**Verified**: rebuilt and ran a 10-second QEMU capture. No panic;
+`thread_d`, `user_entry`, and `user_entry2` each produce exactly one
+clean, contiguous run of 5 characters (`DDDDD`, `UUUUU`, `VVVVV`);
+`A`/`B`/`C`/`E` interleave correctly across 100 preemption transitions.
+Confirmed the two U-mode threads' output didn't merge or corrupt each
+other's runs (`UUUUU` and `VVVVV` each stayed a single unbroken block,
+appearing back-to-back once both got scheduled, not interleaved
+character-by-character) -- which is exactly what would fail first if
+their per-thread state were shared instead of independent.

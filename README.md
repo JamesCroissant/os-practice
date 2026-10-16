@@ -101,6 +101,12 @@ understandable — you can write and run them yourself in an afternoon.
   save/restore sequence twice, verbatim -- the exact shape of risk that
   let Step 23's bug happen in the first place. Now defined once and
   reused by both, confirmed byte-identical in the generated code.
+- **A second, independent U-mode thread**: `user_launcher_entry2`/
+  `user_entry2`, printing `'V'` instead of `'U'` -- proving
+  `kernel_entry_from_user`'s per-thread kernel stack and `stvec` target
+  (Step 22) actually hold up with two U-mode threads getting preempted
+  and resumed independently, not just the one that existed when that
+  design was written and verified.
 
 ## Source layout
 
