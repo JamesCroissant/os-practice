@@ -107,6 +107,11 @@ understandable — you can write and run them yourself in an afternoon.
   (Step 22) actually hold up with two U-mode threads getting preempted
   and resumed independently, not just the one that existed when that
   design was written and verified.
+- **`launch_user_program`**: `user_launcher_entry`/`user_launcher_entry2`
+  used to carry the same stack-allocation-and-mapping logic twice,
+  verbatim, except for which U-mode program to jump to -- the same
+  shape of risk Step 24 factored out of the trap entry points, this
+  time for real C logic rather than a textual macro.
 
 ## Source layout
 

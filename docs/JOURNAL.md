@@ -985,3 +985,31 @@ other's runs (`UUUUU` and `VVVVV` each stayed a single unbroken block,
 appearing back-to-back once both got scheduled, not interleaved
 character-by-character) -- which is exactly what would fail first if
 their per-thread state were shared instead of independent.
+
+## Step 27: `user_launcher_entry`/`user_launcher_entry2` shared real duplicated logic
+
+Found reviewing Step 26's own code the next day, not by a visible
+failure -- same pattern as Step 23/25. Adding `user_launcher_entry2`
+meant writing out `user_launcher_entry`'s entire body a second time,
+verbatim except for which `entry` function got passed to
+`enter_user_mode`: setting `trap_vector`, allocating the user stack,
+mapping it `PAGE_U`. Unlike `user_entry`/`user_entry2` (tiny,
+intentionally-duplicated demo bodies, same spirit as `thread_a`/`b`/`c`),
+this was real logic -- four meaningful lines, not two -- duplicated
+wholesale instead of parameterized, exactly the shape of risk Step 24
+factored out of `kernel_entry`/`kernel_entry_from_user` for the same
+reason: two near-identical blocks that can drift out of sync without
+either one looking wrong on its own.
+
+Fix: pulled the shared body into `launch_user_program(void (*entry)
+(void))`, taking the one thing that actually varies as a parameter.
+`user_launcher_entry`/`user_launcher_entry2` are now one line each.
+
+**Verified**: rebuilt clean (no new warnings) and ran a 10-second QEMU
+capture: no panic; `thread_d`, `user_entry`, and `user_entry2` each
+still produce exactly one clean run of 5 characters (`DDDDD`, `UUUUU`,
+`VVVVV`); `A`/`B`/`C`/`E` interleave correctly across 83 preemption
+transitions. Unlike Step 24's macro extraction, this is a real C-level
+restructuring (a new function call, not a textual macro expansion), so
+byte-identical generated code isn't the right bar here -- behavior
+unchanged is, and it is.
