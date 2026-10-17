@@ -153,6 +153,7 @@ void thread_e_entry(void);
 #define SSTATUS_SPIE (1 << 5)  // restored into SIE by sret
 
 __attribute__((noreturn)) void enter_user_mode(uint32_t entry, uint32_t user_sp);
+void launch_user_program(void (*entry)(void));
 void user_entry(void);
 void user_launcher_entry(void);
 void user_entry2(void);

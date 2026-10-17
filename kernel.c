@@ -792,7 +792,11 @@ void user_entry(void) {
 // see kernel_entry_from_user's own comment for why a U-mode thread's
 // traps need a different entry point, and yield()'s for why every future
 // dispatch back to this thread needs to see the updated value too.
-void user_launcher_entry(void) {
+//
+// Shared by every U-mode launcher thread (user_launcher_entry and
+// user_launcher_entry2 below) -- pulled out once a second one existed
+// to write out, verbatim, instead of just parameterizing the first.
+void launch_user_program(void (*entry)(void)) {
     current_thread->trap_vector = (uint32_t)kernel_entry_from_user;
 
     paddr_t user_stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
@@ -800,7 +804,11 @@ void user_launcher_entry(void) {
          paddr += PAGE_SIZE) {
         map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_U);
     }
-    enter_user_mode((uint32_t)user_entry, user_stack_bottom + THREAD_STACK_SIZE);
+    enter_user_mode((uint32_t)entry, user_stack_bottom + THREAD_STACK_SIZE);
+}
+
+void user_launcher_entry(void) {
+    launch_user_program(user_entry);
 }
 
 // A second, independently-launched U-mode program -- same shape as
@@ -828,20 +836,13 @@ void user_entry2(void) {
     );
 }
 
-// Same shape as user_launcher_entry -- see its own comment for why
-// trap_vector is set here and why the stack has to be mapped with
-// PAGE_U. A second, separately-allocated stack and thread slot, not a
-// shared one: the whole point is for this thread's own stack_top and
-// trap_vector to be independent of user_launcher_entry's.
+// Same shape as user_launcher_entry, via the same launch_user_program --
+// a second, separately-allocated stack and thread slot, not a shared
+// one: the whole point is for this thread's own stack_top and
+// trap_vector (both set inside launch_user_program, from
+// current_thread) to be independent of user_launcher_entry's.
 void user_launcher_entry2(void) {
-    current_thread->trap_vector = (uint32_t)kernel_entry_from_user;
-
-    paddr_t user_stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
-    for (paddr_t paddr = user_stack_bottom; paddr < user_stack_bottom + THREAD_STACK_SIZE;
-         paddr += PAGE_SIZE) {
-        map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_U);
-    }
-    enter_user_mode((uint32_t)user_entry2, user_stack_bottom + THREAD_STACK_SIZE);
+    launch_user_program(user_entry2);
 }
 
 void kernel_main(void) {
