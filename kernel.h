@@ -104,6 +104,7 @@ struct trap_frame {
 // Our own syscall ABI -- not SBI's (see handle_trap's comment in kernel.c).
 #define SYS_PUTCHAR 1
 #define SYS_EXIT 2
+#define SYS_YIELD 3
 
 void handle_trap(struct trap_frame *f);
 void kernel_entry(void);
@@ -158,6 +159,8 @@ void user_entry(void);
 void user_launcher_entry(void);
 void user_entry2(void);
 void user_launcher_entry2(void);
+void user_entry3(void);
+void user_launcher_entry3(void);
 
 void kernel_main(void);
 void boot(void);

@@ -235,6 +235,17 @@ void handle_trap(struct trap_frame *f) {
             case SYS_PUTCHAR:
                 putchar((char)f->a0);
                 break;
+            case SYS_YIELD:
+                // The exact same yield() the timer-interrupt path above
+                // already calls -- a U-mode thread giving up the CPU
+                // voluntarily instead of waiting to be preempted, same
+                // mechanism either way. f still points at *this* trap's
+                // own frame on *this* thread's own dedicated kernel
+                // stack (kernel_entry_from_user) regardless of how many
+                // other threads run in between, so f->sepc below is set
+                // correctly whenever this thread is next dispatched.
+                yield();
+                break;
             case SYS_EXIT:
                 // Same destination as a kernel thread's entry function
                 // returning (Step 7) -- current_thread is still the
@@ -845,6 +856,44 @@ void user_launcher_entry2(void) {
     launch_user_program(user_entry2);
 }
 
+// A third U-mode program, exercising SYS_YIELD instead of just proving
+// another instance of SYS_PUTCHAR/SYS_EXIT (Step 26 already did that).
+// user_entry/user_entry2 complete their whole 5-character loop inside
+// a single preemption window, every time -- that's the exact invariant
+// every prior step's QEMU capture checks for ("DDDDD"/"UUUUU"/"VVVVV"
+// each as one clean, contiguous run). This one calls SYS_YIELD after
+// every character instead, so it should *not* look like that: giving
+// up the CPU voluntarily between prints gives the scheduler a real
+// chance to run something else before this thread's own next
+// character, same as any other thread sharing CPU time. 'W's that
+// come out interleaved with A/B/C/E -- not bunched into one block --
+// *is* the evidence the syscall actually transferred control, not a
+// failure to reproduce U/V's shape.
+__attribute__((naked)) __attribute__((section(".text.user")))
+void user_entry3(void) {
+    __asm__ __volatile__(
+        "li a0, 'W'\n"
+        "li t0, 5\n"
+        "1:\n"
+        "li a3, %[sys_putchar]\n"
+        "ecall\n"
+        "li a3, %[sys_yield]\n"
+        "ecall\n"
+        "addi t0, t0, -1\n"
+        "bnez t0, 1b\n"
+        "li a3, %[sys_exit]\n"
+        "ecall\n"
+        :
+        : [sys_putchar] "i"(SYS_PUTCHAR), [sys_yield] "i"(SYS_YIELD), [sys_exit] "i"(SYS_EXIT)
+    );
+}
+
+// Same shape as user_launcher_entry/user_launcher_entry2, via the same
+// launch_user_program.
+void user_launcher_entry3(void) {
+    launch_user_program(user_entry3);
+}
+
 void kernel_main(void) {
     // The linker only reserves space for .bss; nothing has zeroed it yet.
     memset(__bss, 0, (size_t)__bss_end - (size_t)__bss);
@@ -922,6 +971,10 @@ void kernel_main(void) {
     // own comment for why one U-mode thread was never enough to actually
     // exercise kernel_entry_from_user's per-thread design.
     thread_create(user_launcher_entry2);
+    // A third, exercising SYS_YIELD instead of relying only on
+    // preemption -- see user_entry3's own comment for why its output
+    // is expected to look different from user_entry/user_entry2's.
+    thread_create(user_launcher_entry3);
 
     // kernel_main is current_thread's placeholder (idle_thread) until
     // this first yield() hands off to whichever thread the scheduler
