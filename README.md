@@ -112,6 +112,12 @@ understandable — you can write and run them yourself in an afternoon.
   verbatim, except for which U-mode program to jump to -- the same
   shape of risk Step 24 factored out of the trap entry points, this
   time for real C logic rather than a textual macro.
+- **`SYS_YIELD`**: a U-mode program can now give up the CPU
+  cooperatively, the same way a kernel thread's own `yield()` call
+  always could, instead of only ever being preempted. `user_entry3`
+  exercises it directly -- each `'W'` it prints lands on its own,
+  separated by whatever else was runnable, proving the syscall actually
+  transfers control rather than silently returning.
 
 ## Source layout
 

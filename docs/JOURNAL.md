@@ -1013,3 +1013,46 @@ transitions. Unlike Step 24's macro extraction, this is a real C-level
 restructuring (a new function call, not a textual macro expansion), so
 byte-identical generated code isn't the right bar here -- behavior
 unchanged is, and it is.
+
+## Step 28: `SYS_YIELD` -- a U-mode program can give up the CPU voluntarily
+
+A genuine missing feature, not a bug: every U-mode thread so far
+(`user_entry`/`user_entry2`) only ever gives up the CPU by being
+preempted -- there was no way for one to cooperate with the scheduler
+the way a kernel thread (`thread_a`/`b`/`c`, calling `yield()` directly)
+always could. `yield()` itself needed no changes at all: it's already
+correct to call from inside `handle_trap` on `f`'s own dedicated kernel
+stack (`kernel_entry_from_user`, Step 22/23) regardless of *why*
+`handle_trap` was entered -- a timer interrupt (the existing call,
+`handle_trap`'s `SCAUSE_SUPERVISOR_TIMER_INTERRUPT` branch) and a
+voluntary `ecall` are both just "control is in `handle_trap` right
+now," indistinguishable to `yield()` itself.
+
+Added `SYS_YIELD` (3): `handle_trap`'s ecall switch gains one more
+case, calling the exact same `yield()`, then falling through to the
+same `f->sepc = sepc + 4` every other syscall case already relies on
+to skip the `ecall` instruction on return.
+
+Proving it actually transfers control (not just that it compiles and
+doesn't crash) needed a program that *uses* it, but `user_entry`/
+`user_entry2` were the wrong place to add that: their whole value as a
+verification tool is printing exactly 5 characters as a single,
+uninterrupted block, every run, which every step since Step 22 checks
+for. Deliberately yielding mid-loop would have broken that invariant,
+not exercised it cleanly. Added a third program instead -- `user_entry3`
+-- that calls `SYS_YIELD` after every `SYS_PUTCHAR`, printing `'W'`.
+Its signature is the *opposite* of `user_entry`/`user_entry2`'s: each
+`'W'` landing on its own, separated by whatever else was runnable, is
+exactly what proves the syscall worked -- a `WWWWW` block would mean
+`SYS_YIELD` silently did nothing.
+
+**Verified**: rebuilt clean and ran a 10-second QEMU capture. No panic;
+`thread_d`, `user_entry`, and `user_entry2` still produce their usual
+single clean run of 5 (`DDDDD`, `UUUUU`, `VVVVV`) -- confirming
+`SYS_YIELD` existing at all didn't change their behavior. `user_entry3`'s
+5 `'W'`s came out as 5 *separate* single-character occurrences
+(`[1, 1, 1, 1, 1]`, not `[5]`), each one directly bordered by another
+thread's output (`...EEEEEWAAAAA...`, repeated) -- the scheduler
+genuinely ran something else between every single `SYS_YIELD` call,
+confirming the syscall transferred control rather than silently
+returning. `A`/`B`/`C`/`E` kept interleaving correctly throughout.
