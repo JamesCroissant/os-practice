@@ -921,8 +921,9 @@ void kernel_main(void) {
         map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
     }
 
-    // user_entry's own page-aligned region (kernel.ld's .text.user) is
-    // the one place that *does* get PAGE_U, plus PAGE_X so U-mode can
+    // Every small U-mode program's page-aligned region (kernel.ld's
+    // .text.user, shared by user_entry/user_entry2/user_entry3) is the
+    // one place that *does* get PAGE_U, plus PAGE_X so U-mode can
     // actually fetch from it -- isolated to its own page(s) specifically
     // so this never shares a page with code the kernel itself needs to
     // run.

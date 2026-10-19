@@ -1056,3 +1056,34 @@ thread's output (`...EEEEEWAAAAA...`, repeated) -- the scheduler
 genuinely ran something else between every single `SYS_YIELD` call,
 confirming the syscall transferred control rather than silently
 returning. `A`/`B`/`C`/`E` kept interleaving correctly throughout.
+
+## Step 29: three stale `user_entry`-singular comments, after Steps 26/28 added siblings
+
+Found reviewing a part of the codebase the last several days' reviews
+hadn't touched closely -- `kernel.ld` and the extern declarations in
+`kernel.h` -- rather than the U-mode/scheduler code every recent step
+has been circling. Three comments still described `.text.user` and
+`__user_text_start`/`__user_text_end` as holding "`user_entry`'s own
+code," singular, written back when that was literally true (Step 11).
+Step 26 added `user_entry2` to the same section, and Step 28 added
+`user_entry3` -- both still correctly placed there
+(`__attribute__((section(".text.user")))`), but nothing went back to
+update the comments describing *why* that section exists to say so.
+
+Not a functional bug -- the linker script and the mapping loop in
+`kernel_main` already treat `.text.user` as a *range*, not a
+single-function assumption, so three functions sharing it was already
+handled correctly by the actual code, just not by what the comments
+claimed. Fixed three spots: `kernel.ld`'s section comment, `kernel.h`'s
+extern-declaration comment, and the matching comment in `kernel_main`'s
+own mapping loop -- all now say "every small U-mode program" instead of
+naming `user_entry` alone. Left README's own `user_entry`-specific
+bullet (Step 23, about why its stale-`sscratch` bug was invisible)
+untouched: that one is genuinely about `user_entry` itself, not the
+section it lives in, and stays true regardless of how many other
+programs share the page.
+
+**Verified**: `grep -n "section(\".text.user\")" kernel.c` confirms all
+three functions (`user_entry`, `user_entry2`, `user_entry3`) share the
+section the fixed comments now describe correctly. Comment-only change
+-- rebuilt clean anyway and ran a QEMU capture: no panic.

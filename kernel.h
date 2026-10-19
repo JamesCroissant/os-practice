@@ -24,8 +24,9 @@ typedef uint32_t paddr_t;
 
 // Provided by kernel.ld: where the kernel image starts, the bounds of the
 // zero-initialized data segment, the top of the stack region reserved
-// after it, the page-aligned range holding just user_entry's own code,
-// and the range handed out by alloc_pages().
+// after it, the page-aligned range holding every small U-mode program's
+// own code (user_entry/user_entry2/user_entry3), and the range handed
+// out by alloc_pages().
 extern char __kernel_base[], __bss[], __bss_end[], __stack_top[], __free_ram[],
     __free_ram_end[], __user_text_start[], __user_text_end[];
 
