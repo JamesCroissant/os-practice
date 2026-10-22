@@ -1087,3 +1087,34 @@ programs share the page.
 three functions (`user_entry`, `user_entry2`, `user_entry3`) share the
 section the fixed comments now describe correctly. Comment-only change
 -- rebuilt clean anyway and ran a QEMU capture: no panic.
+
+## Step 30: `kernel_main`'s "three threads" comment stopped being true after Steps 9/26/28
+
+Another stale comment, this time sitting directly above the
+`thread_create` calls in `kernel_main` itself: "Three threads, not two
+-- proving the scheduler actually decides who runs next instead of two
+threads just hardcoding each other." True when it was the only comment
+there and `thread_a`/`thread_b`/`thread_c` were the only threads
+`kernel_main` created. Step 9 added `thread_d`/`thread_e` right below
+it, and Steps 11/26/28 added the three `user_launcher_entry*` threads
+further down -- all eight calls ended up sitting under a comment that
+still said "three."
+
+Not a functional bug -- `thread_create`'s pool-slot loop and `yield()`'s
+round-robin scan don't care how many callers there are, only that
+`MAX_THREADS` (8) isn't exceeded, which it isn't exactly. Purely a
+comment that quietly stopped describing the code below it as new
+threads were added over several steps, the same shape of drift Step 29
+just fixed in a different part of the file.
+
+Reworded the comment to scope its "three" claim to `thread_a`/`thread_b`/
+`thread_c` specifically (what it was always actually about) and added a
+line noting that `thread_d`/`thread_e` and the three user-mode launchers
+bring the real total to eight, pointing at each one's own existing
+comment instead of repeating what they already explain.
+
+**Verified**: comment-only change -- confirmed with
+`riscv64-linux-gnu-objcopy --dump-section` + `md5sum` on `.text`,
+`.text.user`, and `.rodata` before and after that the generated code is
+byte-for-byte unchanged, then rebuilt clean and ran a QEMU capture: no
+panic, A/B/C/E still interleaving as before.

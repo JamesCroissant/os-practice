@@ -960,8 +960,12 @@ void kernel_main(void) {
     // big for a 32-bit int. Exercises the INT_MIN fix above directly.
     printf("INT_MIN = %d\n", -2147483647 - 1);
 
-    // Three threads, not two -- proving the scheduler actually decides
-    // who runs next instead of two threads just hardcoding each other.
+    // thread_a/b/c: three threads, not two -- proving the scheduler
+    // actually decides who runs next instead of two threads just
+    // hardcoding each other. thread_d/e each exercise something further
+    // (finite exit, trap-address diversity across a busy loop -- see
+    // their own comments); the three user_launcher_entry* calls below
+    // bring kernel_main's actual thread count to eight.
     thread_create(thread_a_entry);
     thread_create(thread_b_entry);
     thread_create(thread_c_entry);
