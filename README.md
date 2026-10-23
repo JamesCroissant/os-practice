@@ -118,6 +118,17 @@ understandable — you can write and run them yourself in an afternoon.
   exercises it directly -- each `'W'` it prints lands on its own,
   separated by whatever else was runnable, proving the syscall actually
   transfers control rather than silently returning.
+- **`yield()`'s own critical section is now interrupt-safe**: fixes a
+  latent race where `kernel_main`'s one direct call to `yield()` (the
+  only caller not already reached through a trap, hence not already
+  protected by hardware clearing `sstatus.SIE` on entry) could have a
+  timer interrupt land between `sscratch`/`stvec` being updated for the
+  next thread and `switch_context()` actually switching onto its stack
+  -- re-entering `yield()` before the first call finished and
+  clobbering that thread's brand-new stack frame before it ever ran.
+  Never observed in practice (the window is a handful of instructions,
+  nowhere near QEMU's ~0.1s timer period), the same way Step 13's
+  `sstatus.SUM` gap never visibly broke anything either.
 
 ## Source layout
 

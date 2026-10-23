@@ -1118,3 +1118,64 @@ comment instead of repeating what they already explain.
 `.text.user`, and `.rodata` before and after that the generated code is
 byte-for-byte unchanged, then rebuilt clean and ran a QEMU capture: no
 panic, A/B/C/E still interleaving as before.
+
+## Step 31: `yield()`'s own critical section was only ever protected by accident
+
+Found reviewing `yield()` itself, not from a crash -- QEMU's timer
+interrupt lands roughly every ~0.1s, nowhere near often enough to have
+ever actually hit the handful of instructions this closes. `yield()`
+updates `current_thread`, writes `sscratch`/`stvec` to reflect `next`,
+*then* calls `switch_context()`, which is the only part of this
+sequence that actually moves onto `next`'s own stack. Every existing
+call site happens to already run with interrupts disabled, but only
+because `handle_trap`'s two callers (the timer-interrupt path and the
+`SYS_YIELD` ecall path) are themselves reached through a trap, and
+hardware clears `sstatus.SIE` automatically on trap entry -- `yield()`
+itself never arranged for that protection; it was just always true of
+every caller that happened to exist so far.
+
+`kernel_main`'s own direct call at the very end of `kernel_main` is the
+one exception: by that point `sstatus.SIE` has already been set
+explicitly (to arm preemption at all), and this call isn't reached
+through a trap -- it's kernel_main's own ordinary S-mode flow,
+continuing straight from boot. A timer interrupt landing between the
+`sscratch`/`stvec` writes and `switch_context()` in *this specific call*
+would trap using `next`'s already-written `sscratch` (its fresh,
+unused `stack_top`) and `stvec`, while still actually running on
+whatever stack this call is on -- not `next`'s. If that trap reaches
+`SCAUSE_SUPERVISOR_TIMER_INTERRUPT`'s path and calls `yield()` a second
+time, re-entrantly, before the first call ever reaches
+`switch_context()`, that nested call would save *this* call's own
+still-in-progress stack pointer into `next->sp` -- clobbering the
+brand-new thread's about-to-be-used initial frame (the one
+`thread_init()` built for `thread_trampoline`) with garbage, before
+`next` ever gets to run at all.
+
+Same shape as Step 13's `sstatus.SUM` finding: nothing in this kernel's
+own single-threaded QEMU runs happens to land in a window a few
+instructions wide, so it never visibly broke anything -- not a reason
+to leave a real correctness gap resting on timing luck rather than an
+actual guarantee.
+
+Fixed by disabling interrupts (`csrci sstatus, 2`) at the very top of
+`yield()`, protecting the whole function as the critical section it
+already was in every caller but one. A no-op for the two call sites
+reached through a trap (`sstatus.SIE` is already 0 there); for
+`kernel_main`'s direct call, it closes the gap outright. Whichever path
+resumes a thread afterward already re-enables interrupts correctly on
+its own: `sret` restores `sstatus` from the trap frame's own saved
+copy (captured before `handle_trap`/`yield()` ever ran, so unaffected
+by clearing the live CSR mid-`yield()`), and `thread_trampoline`'s own
+`csrsi` covers a thread's first-ever run, which never goes through
+`sret` at all.
+
+**Verified**: the race itself is only a few instructions wide and isn't
+reproducible on demand against QEMU's periodic timer, so this rests on
+reasoning about the trap model plus confirming no regression: rebuilt
+clean and ran a QEMU capture covering every existing thread shape --
+no panic, A/B/C/E interleaving, D/U/V each one clean contiguous run of
+5, and W's five syscalls still landing separated rather than bunched
+(confirming `SYS_YIELD` still transfers control correctly through the
+now-protected `yield()`). Thread A specifically (the very first thread
+`kernel_main`'s own unprotected call used to hand off to) still starts
+and runs normally.
