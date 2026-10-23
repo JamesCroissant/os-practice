@@ -610,6 +610,30 @@ struct thread *thread_create(void (*entry)(void)) {
 // next RUNNABLE one and switch to it. A thread never needs to know who
 // it's handing off to -- it just calls yield() and trusts the scheduler.
 void yield(void) {
+    // Disable interrupts for the rest of this function. current_thread,
+    // sscratch, and stvec are all about to be updated to reflect `next`,
+    // but switch_context() below hasn't actually swapped onto next's
+    // stack yet -- a timer interrupt landing in that gap would trap
+    // using next's already-written sscratch/stvec while still running
+    // on whichever stack this call happens to be on, re-entering yield()
+    // a second time before this call ever reaches switch_context. That
+    // second call would then save *this* call's own in-progress stack
+    // pointer into next->sp, clobbering it before next ever actually
+    // runs.
+    //
+    // A no-op everywhere yield() is normally called (handle_trap's two
+    // call sites are already inside a trap, where hardware clears
+    // sstatus.SIE on entry) -- the one caller this protects is
+    // kernel_main's own direct call at the end of kernel_main, the only
+    // place yield() ever runs outside of a trap, with interrupts already
+    // enabled by that point. Whichever path resumes from here re-enables
+    // interrupts correctly on its own: `sret` restores sstatus from the
+    // trap frame's own saved copy (taken before this ever ran, so
+    // unaffected by clearing the live CSR here), and thread_trampoline's
+    // own `csrsi` covers a thread's first-ever run, which never passes
+    // through `sret` at all.
+    __asm__ __volatile__("csrci sstatus, 2" ::: "memory");
+
     // current_thread - threads is only well-defined pointer arithmetic
     // when current_thread actually points into the threads[] array --
     // idle_thread is a separate object entirely, so subtracting threads
