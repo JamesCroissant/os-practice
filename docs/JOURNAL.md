@@ -1179,3 +1179,59 @@ no panic, A/B/C/E interleaving, D/U/V each one clean contiguous run of
 now-protected `yield()`). Thread A specifically (the very first thread
 `kernel_main`'s own unprotected call used to hand off to) still starts
 and runs normally.
+
+## Step 32: `launch_user_program` set `trap_vector` one call too early
+
+Found re-reading `launch_user_program` right after fixing Step 31's
+`yield()` race -- same shape of bug, one call deeper. `trap_vector` was
+set to `kernel_entry_from_user` as the very first thing in the
+function, with a comment justifying only that it happens "before
+`enter_user_mode` ever runs." True, but not enough: `alloc_pages()` and
+the `map_page()` loop that follow do real work with interrupts still
+enabled (this function runs as an ordinary kernel thread's entry
+point, already past `thread_trampoline`'s `csrsi`), and nothing stops a
+timer interrupt from landing in that window.
+
+If one did, `yield()` (now itself interrupt-safe since Step 31) would
+suspend this thread normally and resume it again later exactly where
+it left off -- still inside `alloc_pages`/`map_page`, still on its own
+ordinary kernel stack, `sp` nowhere near the user stack yet. But by
+then `next->trap_vector` (read by that *resuming* `yield()` call, to
+set the live `stvec`) already says `kernel_entry_from_user`, because
+the struct field was written before the preemption, far too early. A
+*second* timer interrupt landing anywhere in this thread's continued
+run -- still mid-`alloc_pages`/`map_page`, still well before
+`enter_user_mode`'s own `mv sp, a1` -- would now trap through
+`kernel_entry_from_user` instead of `kernel_entry`. Its prologue
+(`csrrw sp, sscratch, sp`) swaps `sp` for `sscratch` (== this thread's
+own `stack_top`, set by the very same `yield()` dispatch) and starts
+pushing a 33-word trap frame downward from the top of a stack this
+thread is still genuinely using lower down -- stomping its own
+in-progress call frames (`alloc_pages`'s locals, `map_page`'s, this
+function's own), not some other thread's memory.
+
+Same root cause as Step 31 (a value read by a *later* `yield()`
+dispatch, written too early relative to when it becomes true), just one
+function deeper: `enter_user_mode` already disables interrupts
+(`csrci sstatus, 2`) and writes the *live* `stvec` itself, atomically,
+exactly when `sp` actually moves -- the struct field write is the one
+piece of this handoff that was happening outside that protection.
+
+Fixed by moving the `trap_vector` assignment out of the top of
+`launch_user_program` and down next to the call into `enter_user_mode`,
+behind its own `csrci sstatus, 2` first -- interrupts stay off
+continuously from there through `enter_user_mode`'s own (now redundant,
+harmless) `csrci` all the way to its `sret`, which sets
+`sstatus.SPIE = 1` unconditionally regardless of what this function's
+own `sstatus.SIE` was, re-enabling interrupts correctly the instant
+U-mode actually starts.
+
+**Verified**: same situation as Step 31 -- the window is a handful of
+instructions during `alloc_pages`/`map_page`, not reproducible on
+demand against QEMU's periodic timer, so this rests on the reasoning
+above plus confirming no regression. Rebuilt clean and ran a QEMU
+capture covering every existing thread shape: no panic, A/B/C/E
+interleaving, D/U/V each one clean run of 5, W's syscalls still
+separated. All three U-mode launcher threads (`user_launcher_entry`,
+`user_launcher_entry2`, `user_launcher_entry3` -- all three share this
+one function per Step 27) still start and run correctly.

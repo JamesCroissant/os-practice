@@ -129,6 +129,16 @@ understandable — you can write and run them yourself in an afternoon.
   Never observed in practice (the window is a handful of instructions,
   nowhere near QEMU's ~0.1s timer period), the same way Step 13's
   `sstatus.SUM` gap never visibly broke anything either.
+- **`launch_user_program` sets `trap_vector` at the right moment now**:
+  same root cause as the `yield()` fix above, one call deeper -- the
+  struct field a later `yield()` dispatch reads to restore `stvec` was
+  being written before `alloc_pages()`/`map_page()`'s own
+  interrupts-enabled work, not atomically with `enter_user_mode`'s
+  actual privilege/stack transition. A timer interrupt in that window
+  could have this thread's own later resumption trap through
+  `kernel_entry_from_user` while `sp` was still an ordinary kernel
+  pointer, stomping its own in-progress stack. Moved next to
+  `enter_user_mode`'s call, behind the same `csrci` pattern.
 
 ## Source layout
 
