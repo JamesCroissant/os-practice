@@ -823,22 +823,41 @@ void user_entry(void) {
 // page -- see Step 11's journal entry): re-mapping just this range adds
 // PAGE_U so the U-mode program can actually use it as its own stack.
 //
-// trap_vector has to be updated here, before enter_user_mode ever runs --
-// see kernel_entry_from_user's own comment for why a U-mode thread's
-// traps need a different entry point, and yield()'s for why every future
-// dispatch back to this thread needs to see the updated value too.
+// trap_vector has to be updated before enter_user_mode ever runs -- see
+// kernel_entry_from_user's own comment for why a U-mode thread's traps
+// need a different entry point, and yield()'s for why every future
+// dispatch back to this thread needs to see the updated value too. But
+// it must happen with interrupts already disabled, immediately before
+// that handoff, not any earlier: alloc_pages()/map_page() above do real
+// work with interrupts still enabled, and a timer interrupt landing
+// after trap_vector is set but before enter_user_mode's own `mv sp, a1`
+// actually moves sp onto the user stack would resume this exact thread
+// later with stvec already pointing at kernel_entry_from_user while sp
+// is still this thread's ordinary kernel-mode pointer -- ordinary,
+// because enter_user_mode hasn't run yet, not because kernel_entry_from
+// _user's sscratch swap doesn't matter. On *that* later resumption, a
+// second interrupt would trap through kernel_entry_from_user, which
+// swaps sp for sscratch (== this thread's own stack_top) and starts
+// pushing a trap frame downward from the top of a stack this thread is
+// still genuinely using lower down -- a real stack corruption, same
+// shape as Step 31's finding, just one call deeper.
 //
 // Shared by every U-mode launcher thread (user_launcher_entry and
 // user_launcher_entry2 below) -- pulled out once a second one existed
 // to write out, verbatim, instead of just parameterizing the first.
 void launch_user_program(void (*entry)(void)) {
-    current_thread->trap_vector = (uint32_t)kernel_entry_from_user;
-
     paddr_t user_stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
     for (paddr_t paddr = user_stack_bottom; paddr < user_stack_bottom + THREAD_STACK_SIZE;
          paddr += PAGE_SIZE) {
         map_page(kernel_page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_U);
     }
+
+    // Disabled here, not re-enabled until enter_user_mode's own `sret`
+    // (which sets sstatus.SPIE=1 unconditionally, regardless of this
+    // call's own sstatus.SIE) -- enter_user_mode's own `csrci` right
+    // after is a harmless no-op on top of this.
+    __asm__ __volatile__("csrci sstatus, 2" ::: "memory");
+    current_thread->trap_vector = (uint32_t)kernel_entry_from_user;
     enter_user_mode((uint32_t)entry, user_stack_bottom + THREAD_STACK_SIZE);
 }
 
