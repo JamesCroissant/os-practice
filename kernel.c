@@ -109,8 +109,28 @@ end:
 // physical memory backing that thread's stack. Zeroes what it hands out,
 // since leftover bytes from OpenSBI or an earlier boot aren't safe to
 // hand a new thread as its stack.
+//
+// next_free's read-check-increment has to be atomic with respect to
+// preemption, not just correct in isolation: this is called both from
+// kernel_main's own thread-creation loop (thread_init(), for each new
+// thread's kernel stack) and from inside a thread that loop has already
+// made RUNNABLE (launch_user_program(), for a U-mode stack, the first
+// time that thread is ever dispatched) -- and interrupts are enabled
+// for both by the time either runs. A timer interrupt landing between
+// this function's own read of next_free and its write-back, followed by
+// yield() dispatching straight into the other caller, would let that
+// second call read the exact same next_free before the first call ever
+// advances it -- handing out the same physical memory to both, not a
+// theoretical conflict but a guaranteed one once it happens. `csrrci`
+// atomically reads the old sstatus and clears SIE (bit 1) in one
+// instruction; the original value (whatever it was) is restored
+// verbatim before returning, so a future caller that already had
+// interrupts disabled for its own reasons isn't affected either way.
 paddr_t alloc_pages(uint32_t n) {
     static paddr_t next_free = (paddr_t)__free_ram;
+
+    unsigned long old_sstatus;
+    __asm__ __volatile__("csrrci %0, sstatus, 2" : "=r"(old_sstatus) :: "memory");
 
     paddr_t addr = next_free;
     uint32_t size = n * PAGE_SIZE;
@@ -123,6 +143,8 @@ paddr_t alloc_pages(uint32_t n) {
     next_free += size;
 
     memset((void *)addr, 0, size);
+
+    __asm__ __volatile__("csrw sstatus, %0" :: "r"(old_sstatus) : "memory");
     return addr;
 }
 
