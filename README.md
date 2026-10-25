@@ -139,6 +139,16 @@ understandable — you can write and run them yourself in an afternoon.
   `kernel_entry_from_user` while `sp` was still an ordinary kernel
   pointer, stomping its own in-progress stack. Moved next to
   `enter_user_mode`'s call, behind the same `csrci` pattern.
+- **`alloc_pages()` is now atomic with respect to preemption**: its
+  bump-allocator counter (`next_free`) had a read-check-increment that
+  nothing stopped a timer interrupt from landing in the middle of --
+  concretely reachable once `kernel_main`'s own thread-creation loop
+  races against an already-dispatched thread's `launch_user_program()`
+  call, both allocating stacks through the same counter. A single
+  interrupt in that window (not two, unlike the previous two fixes)
+  would hand the same physical memory to both callers. Fixed with
+  `csrrci`, which atomically reads and clears `sstatus.SIE`, restoring
+  the original value (not an unconditional re-enable) before returning.
 
 ## Source layout
 

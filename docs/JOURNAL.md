@@ -1235,3 +1235,56 @@ interleaving, D/U/V each one clean run of 5, W's syscalls still
 separated. All three U-mode launcher threads (`user_launcher_entry`,
 `user_launcher_entry2`, `user_launcher_entry3` -- all three share this
 one function per Step 27) still start and run correctly.
+
+## Step 33: `alloc_pages()`'s own bump counter wasn't atomic with respect to preemption
+
+A different kind of bug from the last two steps' trap_vector/stvec
+timing issues, found looking for other code reachable from more than
+one preemptible caller. `alloc_pages()`'s entire contract rests on
+`next_free`'s read-check-increment running as one atomic step: read
+the current value, bump it, hand back the old one. Nothing enforced
+that against a timer interrupt landing in the middle of it.
+
+That's concretely reachable here, not just theoretical, because
+`alloc_pages()` has two callers that can genuinely race each other
+once `kernel_main`'s own thread-creation loop is past its first
+`thread_create()` call (`sstatus.SIE` is already set by then):
+`kernel_main` itself, still inside `thread_init()` allocating a
+*later* thread's kernel stack, and `launch_user_program()`, running
+*as* an already-RUNNABLE earlier thread (one of the U-mode launchers)
+the moment it's first dispatched, allocating its own user stack. A
+timer interrupt landing between `kernel_main`'s own read of
+`next_free` and its write-back, followed by `yield()` dispatching
+straight into that launcher thread, would let the launcher's call read
+the *exact same* `next_free` before `kernel_main`'s call ever advances
+it -- handing the same physical memory to both. Unlike Steps 31/32,
+this doesn't need a second interrupt in some even-narrower follow-up
+window: one interrupt landing anywhere in `alloc_pages()`'s body,
+during the entire span of `kernel_main`'s thread-creation loop, is
+enough.
+
+`map_page()`'s own `(table1[vpn1] & PAGE_V) == 0` check-then-allocate
+has the same shape, but isn't fixed here: the only two call sites that
+run with interrupts enabled (`kernel_main`'s own identity-map loops
+run earlier, before `sstatus.SIE` is set, so they're already safe)
+operate on different, non-overlapping address ranges in practice (each
+`launch_user_program()` call maps a freshly `alloc_pages()`'d stack,
+each one at a different address), so there's no concrete collision
+today -- worth remembering if a future step gives two preemptible
+callers a reason to map the same `vpn1` range.
+
+Fixed with the RISC-V `csrrci` instruction, which atomically reads the
+old `sstatus` and clears `SIE` (bit 1) in one step -- cheaper and more
+general than a hand-rolled read/disable/restore sequence, and restores
+the *original* value verbatim before returning (not an unconditional
+re-enable), so a future caller that already had interrupts disabled
+for its own reasons wouldn't be affected either way.
+
+**Verified**: same situation as Steps 31/32 -- not reproducible on
+demand against QEMU's periodic timer, so this rests on the reasoning
+above (this one needs only a single interrupt in a much wider window
+than the last two fixes, making it if anything the most plausible of
+the three to eventually hit in practice) plus confirming no
+regression. Rebuilt clean and ran a QEMU capture: no panic, A/B/C/E
+interleaving, D/U/V each one clean run of 5, W's syscalls still
+separated.
