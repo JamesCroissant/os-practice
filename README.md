@@ -149,6 +149,13 @@ understandable — you can write and run them yourself in an afternoon.
   would hand the same physical memory to both callers. Fixed with
   `csrrci`, which atomically reads and clears `sstatus.SIE`, restoring
   the original value (not an unconditional re-enable) before returning.
+- **`map_page()` is now atomic with respect to preemption too**: the
+  same check-then-allocate shape as `alloc_pages()` above, deliberately
+  left alone when that one was fixed since no call site concretely
+  collides today (every `launch_user_program()` call maps a different
+  address). Not reachable yet isn't the same as safe to leave -- fixed
+  with the same `csrrci` pattern rather than left as a remembered risk
+  for whenever that stops being true.
 
 ## Source layout
 

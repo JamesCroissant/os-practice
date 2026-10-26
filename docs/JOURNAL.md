@@ -1288,3 +1288,42 @@ the three to eventually hit in practice) plus confirming no
 regression. Rebuilt clean and ran a QEMU capture: no panic, A/B/C/E
 interleaving, D/U/V each one clean run of 5, W's syscalls still
 separated.
+
+## Step 34: closing `map_page()`'s own deferred check-then-allocate race
+
+Step 33's own journal entry flagged this and deliberately left it
+alone: `map_page()`'s `(table1[vpn1] & PAGE_V) == 0` check, followed by
+allocating and installing a new second-level table, is a check-then-
+act sequence with the exact same shape as `alloc_pages()`'s bump
+counter -- two calls for the *same* `vpn1` interleaving here would
+both see `PAGE_V` unset, each allocate their own `table0` via
+`alloc_pages()`, and the second write would silently orphan the
+first's page instead of sharing it. Left unfixed on purpose at the
+time, since no call site concretely collides today: each
+`launch_user_program()` call maps a freshly `alloc_pages()`'d stack at
+a different address, so two concurrent `map_page()` calls never
+actually target the same `vpn1` in this program's current shape.
+
+Not reachable today isn't the same as safe to leave, though -- the
+whole point of Step 33's note was that this is exactly the kind of gap
+that stops being "today's problem" the moment some future addition
+gives two preemptible callers a reason to map the same range, and
+nothing about `map_page()` itself would warn whoever adds that. Fixed
+now rather than left as a remembered risk.
+
+Same fix as Step 33: `csrrci` atomically reads the old `sstatus` and
+clears `SIE` in one instruction, restoring the original value verbatim
+before returning. Wrapping the *whole* function, not just the check-
+then-allocate part, since the trailing PTE write is a single store
+that doesn't need its own protection and keeping one disabled region
+is simpler than two. Nesting with `alloc_pages()`'s own identical
+pattern (called from inside this now-protected region) is safe by
+construction: the inner `csrrci` reads back `SIE` already clear and
+restores to that same disabled state, never an early re-enable partway
+through the outer critical section.
+
+**Verified**: same situation as Steps 31-33 -- no concrete collision to
+reproduce on demand (by design, nothing collides today), so this rests
+on the reasoning above plus confirming no regression. Rebuilt clean
+and ran a QEMU capture: no panic, A/B/C/E interleaving, D/U/V each one
+clean run of 5, W's syscalls still separated.
