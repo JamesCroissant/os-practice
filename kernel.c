@@ -188,6 +188,24 @@ void arm_timer(void) {
 // laziness saves here.
 void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
     uint32_t vpn1 = (vaddr >> 22) & 0x3ff;
+
+    // Same atomicity requirement as alloc_pages() (Step 33), and the
+    // same reason: table1[vpn1]'s check-then-allocate has to run as one
+    // step with respect to preemption. Two calls for the same vpn1
+    // interleaving here would both see PAGE_V unset, each allocate its
+    // own table0 via alloc_pages(), and the second write would silently
+    // orphan the first one's page instead of sharing it. No call site
+    // concretely collides today (each launch_user_program() call maps a
+    // freshly alloc_pages()'d stack at a different address -- see Step
+    // 33's own note on this), but nothing about map_page() itself should
+    // have to rely on that staying true. csrrci atomically reads the old
+    // sstatus and clears SIE in one instruction; nesting with
+    // alloc_pages()'s own identical pattern below is safe, since the
+    // inner call just restores back to "disabled," never an early
+    // re-enable.
+    unsigned long old_sstatus;
+    __asm__ __volatile__("csrrci %0, sstatus, 2" : "=r"(old_sstatus) :: "memory");
+
     if ((table1[vpn1] & PAGE_V) == 0) {
         paddr_t table0_paddr = alloc_pages(1);
         table1[vpn1] = ((table0_paddr / PAGE_SIZE) << 10) | PAGE_V;
@@ -196,6 +214,8 @@ void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
     uint32_t *table0 = (uint32_t *)((table1[vpn1] >> 10) * PAGE_SIZE);
     uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
     table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
+
+    __asm__ __volatile__("csrw sstatus, %0" :: "r"(old_sstatus) : "memory");
 }
 
 // There's only one page table so far (no per-process address spaces
