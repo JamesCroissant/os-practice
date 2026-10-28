@@ -156,6 +156,17 @@ understandable — you can write and run them yourself in an afternoon.
   address). Not reachable yet isn't the same as safe to leave -- fixed
   with the same `csrrci` pattern rather than left as a remembered risk
   for whenever that stops being true.
+- **Global interrupts now turn on only once `kernel_main` is done
+  creating threads**: `sstatus.SIE` used to be enabled well before its
+  `thread_create()` loop finished, while `kernel_main` was still
+  represented by `idle_thread` -- which `yield()` never schedules back
+  to. A timer interrupt landing anywhere in that loop, once at least
+  one call had already made some slot `RUNNABLE`, would switch straight
+  into that thread and strand every remaining `thread_create()` call
+  (and the function's own final `yield()`) forever, silently booting
+  with fewer threads than intended. Moved the `sstatus.SIE` write to
+  immediately before that final `yield()`; `sie`'s `STIE` bit and
+  `arm_timer()` stay where they were, since neither depends on it.
 
 ## Source layout
 

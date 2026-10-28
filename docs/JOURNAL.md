@@ -1327,3 +1327,63 @@ reproduce on demand (by design, nothing collides today), so this rests
 on the reasoning above plus confirming no regression. Rebuilt clean
 and ran a QEMU capture: no panic, A/B/C/E interleaving, D/U/V each one
 clean run of 5, W's syscalls still separated.
+
+## Step 35: `kernel_main` itself was exposed to the same preemption gap its own threads are protected from
+
+Every one of Steps 31-34 fixed some *thread*'s state being read or
+written across a window a timer interrupt could land in. Looking at
+`kernel_main` itself with the same question -- what, if anything, is
+unprotected while it runs with interrupts enabled? -- turned up a gap
+in the one piece of code that isn't a thread at all, yet still runs
+exposed to preemption: `kernel_main`'s own body, represented while it
+runs by `idle_thread`.
+
+`sstatus.SIE` (global S-mode interrupt delivery) was being enabled
+right after arming the timer, several lines and a full
+`thread_create()` loop -- eight calls -- before `kernel_main`'s own
+final, direct `yield()`. `yield()`'s own comment already says the
+quiet part out loud: "the one caller this protects is `kernel_main`'s
+own direct call at the end of `kernel_main`... with interrupts already
+enabled by *that* point" -- as if enabling them any earlier than
+necessary was never actually intended, just where the line happened to
+land.
+
+That gap is concretely dangerous, not just untidy: once even the
+*first* `thread_create()` call returns, `threads[0]` is `RUNNABLE`. A
+timer interrupt landing anywhere after that -- during any of the
+remaining seven calls, or in the handful of instructions between the
+loop and the final `yield()` -- traps through `kernel_entry`, which
+calls `yield()` from inside `handle_trap`. That `yield()` sees
+`current_thread == &idle_thread` (so `current_index = -1`), finds the
+already-`RUNNABLE` thread, and switches straight into it via
+`switch_context()` -- which *does* save `kernel_main`'s own
+in-progress stack pointer into `idle_thread.sp` first, so nothing
+crashes. But nothing ever reads `idle_thread.sp` back: `yield()`'s own
+round-robin scan only ever considers `threads[]`, by design
+(`idle_thread` is explicitly "never picked by yield() as a destination"
+-- see its own declaration comment). `kernel_main`'s execution is gone
+for good at that point -- every remaining `thread_create()` call, the
+final `yield()`, and the trailing `wfi` loop simply never happen. The
+kernel would still *look* alive (whichever threads got created before
+the hit keep running each other in round robin), just permanently
+short of however many `thread_create()` calls never ran.
+
+Fixed by moving the `sstatus.SIE` write out of the block that sets up
+`STIE` and arms the timer (neither of which depends on global delivery
+being on yet -- `sie` only selects which interrupt *types* are locally
+recognized, and `arm_timer()`'s SBI call schedules a future trap
+condition in M-mode independent of whether S-mode is currently willing
+to take it) and down to immediately before the final `yield()`, after
+every `thread_create()` call has already returned. This closes the
+entire window: nothing can make a thread `RUNNABLE` and then have a
+timer interrupt strand `kernel_main` before it's actually ready to
+hand off.
+
+**Verified**: same situation as Steps 31-34 -- not reproducible on
+demand (the entire exposed window, from the first `thread_create()`
+call to the final `yield()`, is a handful of microseconds against
+QEMU's ~0.1s timer period), so this rests on the reasoning above plus
+confirming no regression. Rebuilt clean and ran a QEMU capture: no
+panic; counting characters in the post-boot output confirmed D/U/V
+each exactly one clean run of 5, W's 6 syscalls separated rather than
+bunched, and A/B/C/E all present and interleaved throughout.
