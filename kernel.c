@@ -1022,13 +1022,16 @@ void kernel_main(void) {
 
     WRITE_CSR(stvec, (uint32_t)kernel_entry);
 
-    // Enable supervisor timer interrupts (sie bit 5, STIE) and global
-    // S-mode interrupt delivery (sstatus bit 1, SIE), then arm the first
-    // one -- without this, an OS is stuck with only cooperative
-    // scheduling: a thread that never calls yield() keeps the CPU
-    // forever.
+    // Enable supervisor timer interrupts locally (sie bit 5, STIE) and
+    // arm the first one now -- neither depends on sstatus.SIE (global
+    // S-mode interrupt *delivery*, enabled further below, right before
+    // this function's own final yield()): sie only selects which
+    // interrupt types are recognized at all, and arm_timer()'s SBI call
+    // schedules a future trap condition in M-mode regardless of whether
+    // S-mode is currently willing to take it. Without STIE and an armed
+    // timer at all, an OS is stuck with only cooperative scheduling: a
+    // thread that never calls yield() keeps the CPU forever.
     WRITE_CSR(sie, READ_CSR(sie) | (1 << 5));
-    WRITE_CSR(sstatus, READ_CSR(sstatus) | (1 << 1));
 
     // No SSTATUS_SUM here (Step 13 used to set it): that was only ever
     // needed because kernel_entry's trap-frame push landed on the
@@ -1066,9 +1069,19 @@ void kernel_main(void) {
     // is expected to look different from user_entry/user_entry2's.
     thread_create(user_launcher_entry3);
 
-    // kernel_main is current_thread's placeholder (idle_thread) until
-    // this first yield() hands off to whichever thread the scheduler
-    // picks; nothing ever switches back to idle_thread afterwards.
+    // Global S-mode interrupt delivery (sstatus.SIE) turns on only now,
+    // not back when STIE/arm_timer() were set up above -- see Step 35's
+    // journal entry for why the gap between those two points has to stay
+    // closed. kernel_main is current_thread's placeholder (idle_thread)
+    // until the yield() below hands off to whichever thread the
+    // scheduler picks; nothing ever switches back to idle_thread
+    // afterwards, so a timer interrupt landing anywhere in the
+    // thread_create() calls above -- once at least one of them has
+    // already made some thread[] slot RUNNABLE -- would have yield()
+    // switch straight into that thread and strand this function's own
+    // remaining work (every further thread_create() call, and this
+    // yield() itself) forever.
+    WRITE_CSR(sstatus, READ_CSR(sstatus) | (1 << 1));
     yield();
 
     for (;;) {
