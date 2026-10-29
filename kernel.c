@@ -103,6 +103,21 @@ end:
     va_end(vararg);
 }
 
+// Halts forever -- the only sane response to a condition this kernel has
+// no way to recover from (out of memory, no free thread slots, an
+// unknown syscall, a trap this kernel doesn't know how to handle). Pulled
+// out once four call sites had all written out the same loop by hand --
+// the same shape of risk Step 24 already fixed once for kernel_entry/
+// kernel_entry_from_user's register save/restore sequence, just for a
+// halt loop instead of a register list this time. Each call site still
+// prints its own message first (the one thing that actually differs
+// between them); this is only ever what runs after.
+__attribute__((noreturn)) void panic(void) {
+    for (;;) {
+        __asm__ __volatile__("wfi");
+    }
+}
+
 // A bump allocator: hands out the next `n` pages and never frees, so it
 // needs no free-list. Nothing in this kernel has a lifetime shorter than
 // "forever" yet -- thread_exit() frees a *thread slot* for reuse, not the
@@ -136,9 +151,7 @@ paddr_t alloc_pages(uint32_t n) {
     uint32_t size = n * PAGE_SIZE;
     if (next_free + size > (paddr_t)__free_ram_end) {
         printf("PANIC: out of memory\n");
-        for (;;) {
-            __asm__ __volatile__("wfi");
-        }
+        panic();
     }
     next_free += size;
 
@@ -297,9 +310,7 @@ void handle_trap(struct trap_frame *f) {
                 break;  // unreachable; thread_exit() never returns
             default:
                 printf("\nPANIC: unknown syscall %d\n", f->a3);
-                for (;;) {
-                    __asm__ __volatile__("wfi");
-                }
+                panic();
         }
         // ecall doesn't advance pc on its own -- skip over it ourselves,
         // or we'd re-execute the same ecall forever. Written into the
@@ -311,9 +322,7 @@ void handle_trap(struct trap_frame *f) {
     }
 
     printf("\nPANIC: unexpected trap scause=%x, sepc=%x\n", scause, sepc);
-    for (;;) {
-        __asm__ __volatile__("wfi");
-    }
+    panic();
 }
 
 // Saves all 30 non-zero, non-sp registers (sp itself is preserved simply
@@ -643,9 +652,7 @@ struct thread *thread_create(void (*entry)(void)) {
         }
     }
     printf("PANIC: no free thread slots\n");
-    for (;;) {
-        __asm__ __volatile__("wfi");
-    }
+    panic();
 }
 
 // Round-robin: starting just after the current thread's slot, find the

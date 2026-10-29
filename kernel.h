@@ -44,6 +44,7 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4,
                         long arg5, long fid, long eid);
 void putchar(char ch);
 void printf(const char *fmt, ...);
+__attribute__((noreturn)) void panic(void);
 
 #define PAGE_SIZE 4096
 
