@@ -1387,3 +1387,38 @@ confirming no regression. Rebuilt clean and ran a QEMU capture: no
 panic; counting characters in the post-boot output confirmed D/U/V
 each exactly one clean run of 5, W's 6 syscalls separated rather than
 bunched, and A/B/C/E all present and interleaved throughout.
+
+## Step 36: one shared `panic()` instead of four hand-written halt loops
+
+Not a bug this time -- a careful re-read of every function turned up
+no new correctness gap, the first time that's happened since Step 31
+started this run of narrow preemption fixes. Looking instead at
+structure rather than behavior surfaced something Step 24 already
+established a precedent for: four separate `PANIC: ...` call sites
+(`alloc_pages()`'s out-of-memory check, `handle_trap()`'s unknown-
+syscall and unexpected-trap cases, and `thread_create()`'s no-free-
+slots check) each wrote out the exact same `for (;;) { wfi; }` loop by
+hand. Four copies of one idea is the same shape of risk Step 24's own
+journal entry already named for `kernel_entry`/`kernel_entry_from_user`'s
+register save/restore sequence: nothing stops them from quietly
+drifting apart if one is ever touched and the other three aren't.
+
+Added `panic()` -- declared `__attribute__((noreturn))` in `kernel.h`,
+defined in `kernel.c` right before `alloc_pages()` (its first caller)
+-- and replaced all four inline loops with a call to it. Each call
+site keeps its own `printf` exactly as before; that message is the one
+thing that actually differed between them, so there was nothing to
+share there. `thread_create()`'s return type (`struct thread *`) and
+`handle_trap()`'s (`void`) both still compile cleanly with no new
+warnings -- the `noreturn` attribute is what lets the compiler see
+that a call to `panic()` needs no `return` after it, the same way the
+hand-written infinite loops already did implicitly.
+
+**Verified**: rebuilt clean, `-Wall -Wextra` still silent, no new
+warnings from the `noreturn` function or any of its four call sites.
+Ran a QEMU capture: no panic, D/U/V each one clean run of 5, W's
+syscalls still separated rather than bunched, A/B/C/E all present and
+interleaved throughout -- the four panic paths are never exercised in
+a normal run, so this confirms the *rest* of the kernel is unaffected,
+not the panic paths themselves (which were already unreachable under
+normal operation before this change too).

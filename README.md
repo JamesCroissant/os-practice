@@ -167,6 +167,14 @@ understandable — you can write and run them yourself in an afternoon.
   with fewer threads than intended. Moved the `sstatus.SIE` write to
   immediately before that final `yield()`; `sie`'s `STIE` bit and
   `arm_timer()` stay where they were, since neither depends on it.
+- **One shared `panic()` instead of four hand-written halt loops**:
+  `alloc_pages()`'s out-of-memory check, `handle_trap()`'s unknown-
+  syscall and unexpected-trap cases, and `thread_create()`'s no-free-
+  slots check each wrote out the same `for (;;) { wfi; }` loop by hand
+  -- the same shape of risk Step 24 already fixed once for
+  `kernel_entry`/`kernel_entry_from_user`'s register save/restore
+  sequence. Each call site still prints its own message first; only
+  the halt loop after it is now shared.
 
 ## Source layout
 
