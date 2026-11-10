@@ -23,9 +23,11 @@ understandable — you can write and run them yourself in an afternoon.
   instruction demo) or actually resume whatever it interrupted.
 - **Context switching**: kernel threads that give up the CPU by
   saving/restoring callee-saved registers on their own stacks.
-- **Scheduler**: a fixed-size thread pool and round-robin `yield()` —
-  extending past the talk's own two hardcoded threads to three
-  independently-created ones.
+- **Scheduler**: a fixed-size thread pool (`MAX_THREADS`, 8 slots) and
+  round-robin `yield()` — extending past the talk's own two hardcoded
+  threads to a pool the scheduler itself picks from, currently filled
+  with eight independently-created threads (`thread_a`–`thread_e` plus
+  three U-mode launchers).
 - **Preemption**: a timer interrupt forces a switch even for threads that
   never call `yield()` themselves — ties the trap handler and scheduler
   together.

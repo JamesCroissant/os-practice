@@ -1422,3 +1422,32 @@ interleaved throughout -- the four panic paths are never exercised in
 a normal run, so this confirms the *rest* of the kernel is unaffected,
 not the panic paths themselves (which were already unreachable under
 normal operation before this change too).
+
+## Step 37: README's "Scheduler" bullet stopped matching the thread count
+
+The same shape of drift Steps 29/30 already found and fixed in
+`kernel.c`/`kernel.h`/`kernel.ld` -- just missed in README.md's own
+feature list, which neither of those steps touched. README's
+"Scheduler" bullet still read "extending past the talk's own two
+hardcoded threads to three independently-created ones," true back when
+`thread_a`/`thread_b`/`thread_c` were the only threads `kernel_main`
+ever created. Step 9 added `thread_d`/`thread_e`, and Steps 11/26/28
+added the three `user_launcher_entry*` threads, bringing the real count
+to eight -- Step 30 fixed the matching comment inside `kernel_main`
+itself to say so, but README's own bullet, describing the scheduler at
+a higher level, kept citing the old number of three.
+
+Not a functional bug -- same as Step 30, `thread_create()`'s pool-slot
+loop and `yield()`'s round-robin scan don't care how many callers there
+are, only that `MAX_THREADS` isn't exceeded. Purely a case of one
+doc describing the scheduler in terms of a thread count that stopped
+being true several steps ago, and nothing catching it because README's
+wording and `kernel_main`'s comment describe the same fact in two
+different places.
+
+Reworded the bullet to name `MAX_THREADS` (8 slots) directly and state
+the current thread count (eight: `thread_a`-`thread_e` plus the three
+U-mode launchers) instead of repeating the stale "three."
+
+**Verified**: documentation-only change, no code touched -- no rebuild
+needed.
