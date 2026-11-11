@@ -694,12 +694,20 @@ void yield(void) {
     // UB pointer subtraction happens to produce today.
     int current_index = (current_thread == &idle_thread) ? -1 : (int)(current_thread - threads);
 
+    // current_index is -1 (idle_thread) or in [0, MAX_THREADS-1]
+    // (anywhere in the pool), and offset ranges over [1, MAX_THREADS] --
+    // so current_index + offset is always in [0, 2*MAX_THREADS-1],
+    // never negative. C's `%` on a non-negative dividend and a positive
+    // divisor is itself always non-negative, so this can never actually
+    // need the "wrap a negative result back up" adjustment a C programmer
+    // coming from a language with floored modulo (where a negative
+    // dividend *would* need one) might reflexively add here. There used
+    // to be exactly that adjustment, dead code that only ever obscured
+    // the real invariant above -- removed instead of left as a
+    // never-taken branch implying a case that can't occur.
     struct thread *next = NULL;
     for (int offset = 1; offset <= MAX_THREADS; offset++) {
-        int i = (current_index + offset) % MAX_THREADS;
-        if (i < 0) {
-            i += MAX_THREADS;
-        }
+        const int i = (current_index + offset) % MAX_THREADS;
         if (threads[i].state == THREAD_RUNNABLE) {
             next = &threads[i];
             break;
