@@ -1451,3 +1451,55 @@ U-mode launchers) instead of repeating the stale "three."
 
 **Verified**: documentation-only change, no code touched -- no rebuild
 needed.
+
+## Step 38: a dead "wrap a negative modulo" branch in `yield()`'s scan
+
+Not a bug today either -- a careful re-read of every function again
+turned up no new correctness gap. Looking at `yield()`'s round-robin
+scan once more (last touched for a real race in Step 31) found
+something structural instead: `int i = (current_index + offset) %
+MAX_THREADS; if (i < 0) { i += MAX_THREADS; }`. That `if` exists to
+handle `%` producing a negative result on a negative dividend -- a real
+concern in languages with floored modulo, and a real concern in C too,
+*if* the dividend here could ever actually be negative.
+
+It can't. `current_index` is `-1` (`idle_thread`) or in `[0,
+MAX_THREADS-1]` (anywhere in the pool) -- those are the only two cases
+the line right above this loop ever produces. `offset` ranges over
+`[1, MAX_THREADS]`. So `current_index + offset` ranges over `[0,
+2*MAX_THREADS-1]`, never negative, for every call this function will
+ever make. C's `%` on a non-negative dividend and a positive divisor is
+itself always non-negative (unlike some other languages' modulo on a
+negative dividend), so `i` was never going to be negative here in the
+first place -- the `if` was dead code, unreachable under this
+function's own actual invariants, not a defensive check against
+something that could really happen.
+
+Not a functional bug -- the branch never ran, so removing it changes
+no observable behavior, only the generated code (a branch fewer).
+Worth fixing anyway for the same reason Steps 29/30/37's stale comments
+were: dead code that implies a case (`i` turning up negative) which
+can't actually occur is itself a small, standing risk -- a future
+change to `current_index`'s range or `offset`'s bounds could silently
+make that implied case real without this `if` actually being correct
+for it (it unconditionally adds exactly one `MAX_THREADS`, which only
+undoes a dividend that was negative by *less than* one divisor's worth
+-- not a general fix for an arbitrarily negative dividend). Removed the
+branch and added a comment deriving the actual invariant (`current_index
++ offset` is always in `[0, 2*MAX_THREADS-1]`) in its place, so a future
+reader sees why no such branch is needed instead of a branch that quietly
+never ran.
+
+**Verified**: rebuilt clean, `-Wall -Wextra` still silent. Since this
+removes a never-taken branch, generated code for every *other*
+function is expected to be byte-identical, and `yield()` itself only
+loses the dead comparison/branch -- not worth an objcopy+md5sum
+comparison the way a true byte-for-byte refactor gets, since the
+`if`'s removal is itself the one intended code difference. Ran a QEMU
+capture instead, the behavioral check that actually matters here: no
+panic, and isolating the output after "Hello World!" (to exclude
+OpenSBI's own startup banner, which contains incidental letters like
+the stray "W" in "World!" itself) confirms the real invariants hold --
+`D`/`U`/`V` each exactly one clean contiguous run of 5, the 5 genuine
+`SYS_YIELD`-driven `W` prints spread far apart rather than bunched
+together, and `A`/`B`/`C`/`E` all present and interleaved throughout.
