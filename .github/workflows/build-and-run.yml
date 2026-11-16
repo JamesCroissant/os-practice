@@ -1,0 +1,81 @@
+name: Build and run under QEMU
+
+"on":
+  push:
+  pull_request:
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-misc gcc-riscv64-linux-gnu \
+            binutils-riscv64-linux-gnu opensbi
+
+      - name: Build
+        run: |
+          make clean
+          make 2>&1 | tee build.log
+          # -Wall -Wextra is expected to stay silent (every journal entry's
+          # own "Verified:" paragraph checks this by hand) -- grep
+          # specifically for a compiler warning line (kernel.c:LINE:COL:
+          # warning: ...), not just the substring "warning", since the
+          # linker's own pre-existing "LOAD segment with RWX permissions"
+          # warning is expected and unrelated.
+          if grep -q 'kernel\.c:[0-9]*:[0-9]*: warning:' build.log; then
+            echo "New compiler warning(s) found:" >&2
+            grep 'kernel\.c:[0-9]*:[0-9]*: warning:' build.log >&2
+            exit 1
+          fi
+
+      # Boots the actual kernel and checks the same invariants this
+      # project's own daily review already checks by hand on every change:
+      # no panic, and the thread behavior kernel_main sets up (D and U
+      # each a single clean run of 5, A/B/C/E kept alive and interleaving)
+      # stays correct. Scripting this turns "verified under QEMU" from a
+      # claim made in a commit message into something CI itself confirms
+      # on every push, not just on whichever change this account happened
+      # to review by hand that day.
+      - name: Run under QEMU and verify thread behavior
+        run: |
+          timeout 5 qemu-system-riscv32 -machine virt -m 128M \
+            -bios /usr/lib/riscv32-linux-gnu/opensbi/generic/fw_dynamic.bin \
+            -nographic -serial file:out.log -monitor none -kernel kernel.elf \
+            || true
+
+          if grep -q PANIC out.log; then
+            echo "Kernel panicked:" >&2
+            grep PANIC out.log >&2
+            exit 1
+          fi
+
+          if ! grep -q "Hello World!" out.log; then
+            echo "Kernel never reached kernel_main's own Hello World -- didn't boot" >&2
+            exit 1
+          fi
+
+          # Thread output only, excluding OpenSBI's own startup banner
+          # (which contains incidental letters, like the 'W' in "World!").
+          awk '/Hello World!/{f=1} f' out.log > thread_output.log
+
+          for letter in D U; do
+            runs="$(grep -o "${letter}\{1,20\}" thread_output.log)"
+            count="$(echo "$runs" | grep -c .)"
+            if [ "$count" -ne 1 ] || [ "$runs" != "$(printf "${letter}%.0s" 1 2 3 4 5)" ]; then
+              echo "Expected exactly one run of 5 '$letter's, got: $runs" >&2
+              exit 1
+            fi
+          done
+
+          for letter in A B C E; do
+            if ! grep -q "$letter" thread_output.log; then
+              echo "Thread '$letter' never printed anything -- scheduler starved it" >&2
+              exit 1
+            fi
+          done
+
+          echo "No panic, D and U each one clean run of 5, A/B/C/E all present."
