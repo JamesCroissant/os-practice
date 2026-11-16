@@ -1503,3 +1503,44 @@ the stray "W" in "World!" itself) confirms the real invariants hold --
 `D`/`U`/`V` each exactly one clean contiguous run of 5, the 5 genuine
 `SYS_YIELD`-driven `W` prints spread far apart rather than bunched
 together, and `A`/`B`/`C`/`E` all present and interleaved throughout.
+
+## Step 39: no CI at all
+
+Found stepping back from individual bugs to ask what, structurally,
+was still missing -- the same question that turned up the same gap in
+`focus-monitor` and `palim` (the two other projects this account also
+maintains), both of which just gained CI the same day this step was
+written. `os-practice` never had any `.github/workflows/` at all.
+Every one of the 38 steps before this one landed with only this
+account's own local `make`/QEMU run as evidence -- the exact
+"no compiler warning, no panic, D/U each one clean run of 5, A/B/C/E
+still alive" check this project's own daily review repeats by hand on
+every single change, never scripted anywhere, so nothing would catch
+a regression introduced by a change this account didn't make, or
+verify the kernel still builds and boots cleanly from a fresh
+checkout.
+
+Added `.github/workflows/build-and-run.yml`: installs the same
+toolchain README's own Building section already documents
+(`qemu-system-misc gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu
+opensbi`), builds, and fails if a genuine compiler warning line
+(`kernel.c:LINE:COL: warning: ...`) appears -- deliberately not just
+any line containing "warning", since the linker's own pre-existing
+"LOAD segment with RWX permissions" warning is expected and unrelated
+to code quality. Then boots the kernel under QEMU with a 5-second
+timeout and checks, against the output after "Hello World!" (to
+exclude OpenSBI's own startup banner): no `PANIC`, `D` and `U` each
+exactly one clean contiguous run of 5, and `A`/`B`/`C`/`E` each
+printing at least once (catching total scheduler starvation, short of
+a full interleaving check).
+
+Verified the checks are genuinely load-bearing before trusting them,
+not just plausible-looking shell: temporarily changed
+`thread_d_entry`'s loop bound from 5 to 7 and confirmed the script
+reported `DDDDDDD` as a mismatch against the expected run of 5;
+separately, added an unused local variable to `kernel_main` and
+confirmed the script's warning grep caught exactly
+`kernel.c:998:9: warning: unused variable ...`. Both reverted, rebuilt
+clean (`-Wall -Wextra` silent again), and re-ran the full script
+against the restored kernel: no panic, `D`: `DDDDD`, `U`: `UUUUU`,
+`A`/`B`/`C`/`E` all present.

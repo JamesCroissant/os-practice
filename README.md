@@ -177,6 +177,12 @@ understandable — you can write and run them yourself in an afternoon.
   `kernel_entry`/`kernel_entry_from_user`'s register save/restore
   sequence. Each call site still prints its own message first; only
   the halt loop after it is now shared.
+- **CI**: builds and boots the kernel under QEMU on every push and pull
+  request (`.github/workflows/build-and-run.yml`), checking exactly
+  what this project's own daily review already checks by hand -- no
+  new compiler warning, no panic, and the thread behavior
+  `kernel_main` sets up (`D`/`U` each one clean run of 5, `A`/`B`/`C`/`E`
+  all still alive) staying correct.
 
 ## Source layout
 
