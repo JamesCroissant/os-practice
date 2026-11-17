@@ -1544,3 +1544,49 @@ confirmed the script's warning grep caught exactly
 clean (`-Wall -Wextra` silent again), and re-ran the full script
 against the restored kernel: no panic, `D`: `DDDDD`, `U`: `UUUUU`,
 `A`/`B`/`C`/`E` all present.
+
+## Step 40: CI left two of the eight threads completely unchecked
+
+Found while reviewing Step 39's own CI script fresh, the same way this
+project's daily review reads every file fresh rather than trusting a
+prior day's summary: `kernel_main` creates eight threads
+(`thread_a`-`thread_e` plus three U-mode launchers), but the CI script
+added yesterday only ever checked six of them -- `D`, `U`, and
+`A`/`B`/`C`/`E`. `user_launcher_entry2` (prints `'V'`, documented in
+`user_entry2`'s own comment as the same "one clean contiguous run of
+5" shape as `U`) and `user_launcher_entry3` (prints `'W'` via
+`SYS_YIELD`, documented in `user_entry3`'s own comment as the one
+thread whose output should *not* look like that -- interleaved with
+whatever else is runnable, proving the yield syscall actually
+transferred control) were both left silently unverified. A regression
+in either thread -- `V` printing the wrong count, or `SYS_YIELD`
+quietly becoming a no-op so `W` prints as one contiguous block instead
+of interleaving -- would have passed CI clean.
+
+Added `V` to the existing `D`/`U` contiguous-run-of-5 loop, and a
+separate check for `W`: exactly 5 occurrences total, but explicitly
+*not* collapsed into one contiguous `WWWWW` run, so a broken
+`SYS_YIELD` that still prints 5 `W`'s (just not interleaved) is caught
+rather than only checking the raw count.
+
+Fixing this surfaced a second, smaller bug already living in the same
+script: the awk filter meant to drop kernel_main's own "Hello World!"
+line from the captured thread output (that line has a stray `'W'` of
+its own, in "World!") used `{f=1} f` with no `next`, so the flag got
+set and checked on that same line, letting it through anyway -- the
+exact opposite of what its own comment claimed. Harmless for
+`D`/`U`/`A`/`B`/`C`/`E` (none of those letters appear in "Hello
+World!"), but it would have made the new `W` count always read 6
+instead of 5. Added `next` so the line is actually excluded.
+
+Verified against a real QEMU capture of the current kernel: confirmed
+`V` is one clean `VVVVV` run and `W`'s 5 occurrences are each
+interleaved with other threads' output, matching
+`user_entry2`/`user_entry3`'s own documented invariants exactly.
+Confirmed both new checks are load-bearing, not just plausible-looking
+shell, by injecting two regressions into a copy of that capture --
+truncating `V`'s run to 4 characters, and collapsing `W`'s 5
+occurrences into one contiguous run to simulate a broken `SYS_YIELD`
+-- and confirming the updated script correctly failed on each one,
+then reverting and re-running clean: no panic, `D`/`U`/`V` each one
+run of 5, `W` interleaved 5 times, `A`/`B`/`C`/`E` all present.
