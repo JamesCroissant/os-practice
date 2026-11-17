@@ -58,11 +58,23 @@ jobs:
             exit 1
           fi
 
-          # Thread output only, excluding OpenSBI's own startup banner
-          # (which contains incidental letters, like the 'W' in "World!").
-          awk '/Hello World!/{f=1} f' out.log > thread_output.log
+          # Thread output only, excluding both OpenSBI's own startup
+          # banner and kernel_main's own "Hello World!" greeting line --
+          # the latter needs excluding too, not just the former: it has a
+          # stray 'W' of its own (in "World!") that would otherwise count
+          # toward user_entry3's 5 real 'W's below. `{f=1} f` (no `next`)
+          # sets the flag and then, on that very same line, lets it print
+          # anyway -- the exact off-by-one this comment already claimed
+          # not to have; `next` actually excludes the matching line itself.
+          awk '/Hello World!/{f=1; next} f' out.log > thread_output.log
 
-          for letter in D U; do
+          # V (user_entry2) is the same shape as D/U: its own comment in
+          # kernel.c calls "DDDDD"/"UUUUU"/"VVVVV" each one clean,
+          # contiguous run the exact invariant every prior step's QEMU
+          # capture checks for -- this loop checked D and U but silently
+          # left V, one of the eight threads kernel_main actually creates,
+          # unverified.
+          for letter in D U V; do
             runs="$(grep -o "${letter}\{1,20\}" thread_output.log)"
             count="$(echo "$runs" | grep -c .)"
             if [ "$count" -ne 1 ] || [ "$runs" != "$(printf "${letter}%.0s" 1 2 3 4 5)" ]; then
@@ -78,4 +90,22 @@ jobs:
             fi
           done
 
-          echo "No panic, D and U each one clean run of 5, A/B/C/E all present."
+          # W (user_entry3) exercises SYS_YIELD -- user_entry3's own comment
+          # says its 5 'W's should come out interleaved with A/B/C/E, not
+          # bunched into one contiguous run like D/U/V, as the actual proof
+          # that the yield syscall transferred control rather than silently
+          # returning. Checking the count alone (as D/U/V's loop already
+          # does for its own letters) wouldn't catch a regression that
+          # broke SYS_YIELD into a no-op: that would still print exactly 5
+          # W's, just as one contiguous "WWWWW" run.
+          w_count="$(grep -o "W" thread_output.log | wc -l)"
+          if [ "$w_count" -ne 5 ]; then
+            echo "Expected exactly 5 'W's, got $w_count" >&2
+            exit 1
+          fi
+          if grep -q "WWWWW" thread_output.log; then
+            echo "Expected 'W's interleaved with other threads (SYS_YIELD actually yielding), got one unbroken run of 5" >&2
+            exit 1
+          fi
+
+          echo "No panic, D/U/V each one clean run of 5, W interleaved 5 times, A/B/C/E all present."
