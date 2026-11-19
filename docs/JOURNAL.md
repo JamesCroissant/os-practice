@@ -1590,3 +1590,37 @@ occurrences into one contiguous run to simulate a broken `SYS_YIELD`
 -- and confirming the updated script correctly failed on each one,
 then reverting and re-running clean: no panic, `D`/`U`/`V` each one
 run of 5, `W` interleaved 5 times, `A`/`B`/`C`/`E` all present.
+
+## Step 41: CI's own step-level comment still only described six threads
+
+Found while reading Step 40's CI change fresh: that step extended the
+actual checks in `.github/workflows/build-and-run.yml`'s "Run under
+QEMU and verify thread behavior" step to cover all eight threads (`V`
+added to the `D`/`U` contiguous-run-of-5 loop, plus a new,
+separately-commented check for `W`'s 5 interleaved occurrences) -- and
+each of those inline comments was written correctly, right next to
+the code it explains. But the step-level summary comment sitting
+*above* the whole step, written back on Step 39 before `V`/`W` existed
+anywhere in this file, was never touched: it still said only "D and U
+each a single clean run of 5, A/B/C/E kept alive and interleaving",
+silently describing six threads' worth of checking for a step that
+now actually checks all eight.
+
+Not a functional bug -- the comment doesn't run, so this changed no
+behavior, the same way Step 29/30/37's stale comments didn't either.
+Worth fixing for the same reason: a comment that quietly undersells
+what its own code already verifies is exactly the kind of drift that
+makes a future reader (or a future day's review) trust a summary
+instead of the actual checks beneath it, right in the one file whose
+entire job is proving those checks are real.
+
+Updated the comment to name all eight threads and their actual
+invariants (`D`/`U`/`V` each one clean run of 5, `W` interleaved 5
+times rather than bunched, `A`/`B`/`C`/`E` alive and interleaving),
+matching what the step's own inline comments and script already do.
+
+**Verified**: a comment-only change inside a YAML file's `run: |`
+block -- nothing executable changed, so there's nothing to rebuild or
+re-run under QEMU. Confirmed the diff is comment-only (`git diff`
+touches only commented-out lines) and that the updated wording now
+matches the step's actual checks line for line.

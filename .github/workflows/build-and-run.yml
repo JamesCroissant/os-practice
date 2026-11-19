@@ -34,12 +34,13 @@ jobs:
 
       # Boots the actual kernel and checks the same invariants this
       # project's own daily review already checks by hand on every change:
-      # no panic, and the thread behavior kernel_main sets up (D and U
-      # each a single clean run of 5, A/B/C/E kept alive and interleaving)
-      # stays correct. Scripting this turns "verified under QEMU" from a
-      # claim made in a commit message into something CI itself confirms
-      # on every push, not just on whichever change this account happened
-      # to review by hand that day.
+      # no panic, and the thread behavior kernel_main sets up for all
+      # eight threads it creates (D/U/V each a single clean run of 5, W
+      # interleaved 5 times rather than bunched, A/B/C/E kept alive and
+      # interleaving) stays correct. Scripting this turns "verified under
+      # QEMU" from a claim made in a commit message into something CI
+      # itself confirms on every push, not just on whichever change this
+      # account happened to review by hand that day.
       - name: Run under QEMU and verify thread behavior
         run: |
           timeout 5 qemu-system-riscv32 -machine virt -m 128M \
