@@ -180,11 +180,14 @@ understandable — you can write and run them yourself in an afternoon.
 - **CI**: builds and boots the kernel under QEMU on every push and pull
   request (`.github/workflows/build-and-run.yml`), checking exactly
   what this project's own daily review already checks by hand -- no
-  new compiler warning, no panic, and the thread behavior
-  `kernel_main` sets up for all eight threads it creates (`D`/`U`/`V`
-  each one clean run of 5, `W` interleaved 5 times rather than
-  bunched -- proof `SYS_YIELD` actually transfers control -- and
-  `A`/`B`/`C`/`E` all still alive) staying correct.
+  new compiler warning in either `kernel.c` or `kernel.h` (GCC
+  attributes a diagnostic to whichever file the code actually lives
+  in, not just the top-level translation unit, so both are checked),
+  no panic, and the thread behavior `kernel_main` sets up for all
+  eight threads it creates (`D`/`U`/`V` each one clean run of 5, `W`
+  interleaved 5 times rather than bunched -- proof `SYS_YIELD`
+  actually transfers control -- and `A`/`B`/`C`/`E` all still alive)
+  staying correct.
 
 ## Source layout
 

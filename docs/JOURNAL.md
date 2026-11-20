@@ -1624,3 +1624,43 @@ block -- nothing executable changed, so there's nothing to rebuild or
 re-run under QEMU. Confirmed the diff is comment-only (`git diff`
 touches only commented-out lines) and that the updated wording now
 matches the step's actual checks line for line.
+
+## Step 42: CI's compiler-warning check only ever looked at `kernel.c`
+
+Found while reading Step 39/40/41's own CI script fresh, the same way
+this project's daily review reads every file fresh rather than
+trusting a prior day's summary: the "Build" step's warning check greps
+`build.log` for lines matching `kernel\.c:[0-9]*:[0-9]*: warning:`, on
+the theory that this is specific enough to exclude the linker's own
+unrelated pre-existing "LOAD segment with RWX permissions" warning.
+That reasoning is correct as far as it goes, but the pattern is also
+narrower than it needs to be: GCC attributes a diagnostic to whichever
+file the offending code actually lives in, not to the top-level
+translation unit being compiled -- so a warning inside one of
+`kernel.h`'s own inline functions or macro bodies (`READ_CSR`/
+`WRITE_CSR` today, or anything added to the header later) would be
+reported as `kernel.h:LINE:COL: warning: ...`, which the `kernel\.c`-
+only grep would never match at all.
+
+Confirmed this directly rather than just reasoning about it: added a
+throwaway `static inline` function with an unused local variable to
+the very end of `kernel.h` (before its `#endif`), rebuilt, and got
+exactly `kernel.h:171:9: warning: unused variable ... [-Wunused-
+variable]` -- a real, genuine compiler warning that the existing
+`kernel\.c`-only grep silently let through, while CI would have
+reported green.
+
+Broadened the pattern to `^kernel\.(c|h):[0-9]+:[0-9]+: warning:`, so
+either source file's own warnings are caught, not just `kernel.c`'s.
+
+**Verified**: rebuilt clean (no warnings, same as every day) and
+confirmed the new pattern still doesn't false-positive on the
+linker's own RWX-segment warning. Re-added the same throwaway
+`kernel.h` function used to find this gap and confirmed the new grep
+now catches it (`kernel.h:171:9: warning: ...` matches), where the old
+pattern did not; removed it again, rebuilt clean, and confirmed no
+warning either way. No kernel behavior changed -- this is a CI-script
+fix only, so no QEMU re-capture was needed; the existing eight-thread
+invariants (unaffected either way) were last confirmed fresh this same
+session (`D`/`U`/`V` each one run of 5, `W` interleaved 5 times,
+`A`/`B`/`C`/`E` all present).
