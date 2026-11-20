@@ -23,12 +23,21 @@ jobs:
           # -Wall -Wextra is expected to stay silent (every journal entry's
           # own "Verified:" paragraph checks this by hand) -- grep
           # specifically for a compiler warning line (kernel.c:LINE:COL:
-          # warning: ...), not just the substring "warning", since the
-          # linker's own pre-existing "LOAD segment with RWX permissions"
-          # warning is expected and unrelated.
-          if grep -q 'kernel\.c:[0-9]*:[0-9]*: warning:' build.log; then
+          # warning: ... or kernel.h:LINE:COL: warning: ...), not just the
+          # substring "warning", since the linker's own pre-existing "LOAD
+          # segment with RWX permissions" warning is expected and
+          # unrelated. Both source files, not just kernel.c: GCC attributes
+          # a diagnostic to wherever the offending code actually sits, so
+          # a warning inside one of kernel.h's own inline functions or
+          # macro bodies (READ_CSR/WRITE_CSR, say, or a future addition)
+          # is reported as "kernel.h:...", not "kernel.c:..." -- confirmed
+          # directly by temporarily adding an unused-variable-producing
+          # inline function to a throwaway header and observing GCC's own
+          # warning named *that* header, not kernel.c. A kernel.c-only
+          # grep would have silently let such a warning through.
+          if grep -qE '^kernel\.(c|h):[0-9]+:[0-9]+: warning:' build.log; then
             echo "New compiler warning(s) found:" >&2
-            grep 'kernel\.c:[0-9]*:[0-9]*: warning:' build.log >&2
+            grep -E '^kernel\.(c|h):[0-9]+:[0-9]+: warning:' build.log >&2
             exit 1
           fi
 
