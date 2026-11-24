@@ -1664,3 +1664,37 @@ fix only, so no QEMU re-capture was needed; the existing eight-thread
 invariants (unaffected either way) were last confirmed fresh this same
 session (`D`/`U`/`V` each one run of 5, `W` interleaved 5 times,
 `A`/`B`/`C`/`E` all present).
+
+## Step 43: README's "Virtual memory" bullet described a world with no user mode
+
+Another documentation bug, the same class as Step 25's `sstatus.SUM`
+bullet. Step 9's "What's implemented" entry for virtual memory said
+Sv32 was "identity-mapped for now (no user mode exists yet to need
+anything else)" -- true the day Step 9 landed, since user mode didn't
+exist yet. Step 11 added user mode two steps later, and documented it
+correctly in its own bullet ("User mode and syscalls: a thread that
+drops to U-mode and talks to the kernel only through `ecall`..."), but
+never went back to fix the older bullet this made false. A reader going
+through "What's implemented" top to bottom hits "no user mode exists
+yet" and "User mode and syscalls" a few bullets apart, flatly
+contradicting each other, with nothing marking the first one as
+historical the way Step 25's fix explicitly marked the `sstatus.SUM`
+bullet.
+
+Unlike `sstatus.SUM` (an entire mechanism later removed), the
+underlying fact here -- a single identity-mapped page table, not one
+per process -- is still exactly true today; only the parenthetical's
+*reason* ("no user mode exists yet") had gone stale. Fix: reworded it
+to state the actual, still-current reason (no per-process address
+spaces yet, so every kernel and U-mode thread shares the one page
+table) instead of the one that stopped being true, and noted that user
+mode layers `PAGE_U` onto this same map rather than giving identity
+mapping a reason to stop being one.
+
+**Verified**: re-read the "Virtual memory" and "User mode and
+syscalls" bullets together -- no longer contradict each other. `grep
+-rn "no user mode exists"` across the tree now returns nothing. No
+code changed, so no rebuild or QEMU run was needed; the existing
+eight-thread invariants were already confirmed fresh this same session
+(`D`/`U`/`V` each one run of 5, `W` interleaved 5 times, `A`/`B`/`C`/`E`
+all present).

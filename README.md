@@ -39,9 +39,12 @@ understandable — you can write and run them yourself in an afternoon.
   come from it instead of being embedded, unused-or-not, in every pool
   slot's `.bss`.
 - **Virtual memory**: Sv32 page tables, built and switched on at boot —
-  identity-mapped for now (no user mode exists yet to need anything
-  else), but the addressing every later process needs is real from here
-  on, not retrofitted.
+  identity-mapped for now (there's still only one page table, shared by
+  every kernel and U-mode thread alike, not one per process), but the
+  addressing every later process needs is real from here on, not
+  retrofitted. User mode (below) layers `PAGE_U` permission bits onto
+  this same identity map rather than giving it a reason to stop being
+  one.
 - **Per-thread `sepc`/`sstatus`**: fixes a latent bug where a thread
   resumed by a *different* thread's trap would `sret` using that other
   trap's leftover CSR values — invisible until a thread with a genuinely
