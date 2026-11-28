@@ -623,9 +623,11 @@ void thread_init(struct thread *th, void (*entry)(void)) {
     th->sp = (uint32_t)sp;
     th->stack_top = stack_top;
     // Every thread starts out running in S-mode, with no stack switch on
-    // its own traps (today's plain kernel_entry) -- user_launcher_entry
-    // is the one thread that ever changes this, right before it drops to
-    // U-mode for good (see its own comment).
+    // its own traps (today's plain kernel_entry) -- the three U-mode
+    // launcher threads (user_launcher_entry/2/3, via their shared
+    // launch_user_program) are the only ones that ever change this,
+    // right before each drops to U-mode for good (see that function's
+    // own comment).
     th->trap_vector = (uint32_t)kernel_entry;
 }
 
@@ -899,9 +901,11 @@ void user_entry(void) {
 // still genuinely using lower down -- a real stack corruption, same
 // shape as Step 31's finding, just one call deeper.
 //
-// Shared by every U-mode launcher thread (user_launcher_entry and
-// user_launcher_entry2 below) -- pulled out once a second one existed
-// to write out, verbatim, instead of just parameterizing the first.
+// Shared by every U-mode launcher thread (user_launcher_entry,
+// user_launcher_entry2, and user_launcher_entry3 below) -- pulled out
+// once a second one existed to write out, verbatim, instead of just
+// parameterizing the first; the third (Step 26's SYS_YIELD thread)
+// reused it unchanged.
 void launch_user_program(void (*entry)(void)) {
     paddr_t user_stack_bottom = alloc_pages(THREAD_STACK_SIZE / PAGE_SIZE);
     for (paddr_t paddr = user_stack_bottom; paddr < user_stack_bottom + THREAD_STACK_SIZE;

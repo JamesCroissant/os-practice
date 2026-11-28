@@ -1698,3 +1698,34 @@ code changed, so no rebuild or QEMU run was needed; the existing
 eight-thread invariants were already confirmed fresh this same session
 (`D`/`U`/`V` each one run of 5, `W` interleaved 5 times, `A`/`B`/`C`/`E`
 all present).
+
+## Step 44: two comments still described one or two U-mode launcher threads
+
+Found two comments left over from when fewer U-mode launcher threads
+existed than do now, the same class of staleness Step 43 just fixed
+for the "Virtual memory" bullet: `thread_init`'s comment said
+"`user_launcher_entry` is the one thread that ever changes" the
+default `kernel_entry` trap vector -- true back when
+`user_launcher_entry` was the only one, false since
+`user_launcher_entry2` (Step 24) and later `user_launcher_entry3`
+(Step 26) started doing the exact same thing through the same shared
+`launch_user_program`. `launch_user_program`'s own comment, right
+above its definition, had the matching half of the same gap: "Shared
+by every U-mode launcher thread (`user_launcher_entry` and
+`user_launcher_entry2` below)" -- updated when the second launcher was
+added, never again when the third was.
+
+Reworded both to name all three launcher threads. `thread_init`'s
+comment now says the three launchers (via their shared
+`launch_user_program`) are "the only ones" that change `trap_vector`,
+not singling out one by name; `launch_user_program`'s own comment
+lists all three and notes the third reused it unchanged, matching how
+the second one's own addition was already described.
+
+**Verified**: pure comment changes, confirmed with `git diff` showing
+only comment lines touched. Rebuilt anyway as a sanity check (`make
+clean && make`) -- clean, only the expected pre-existing linker RWX
+warning. No QEMU re-capture needed for a comment-only change; the
+existing eight-thread invariants were already confirmed fresh this
+same session (`D`/`U`/`V` each one run of 5, `W` interleaved 5 times,
+`A`/`B`/`C`/`E` all present).
